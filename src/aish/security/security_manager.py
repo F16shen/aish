@@ -1,0 +1,413 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
+import os
+
+from rich.console import Console
+from rich.panel import Panel
+
+from aish.i18n import t
+
+from .command_fallback import CommandFallbackEvaluator
+from .sandbox import SandboxConfig, SandboxSecurity, SandboxUnavailableError, DEFAULT_SANDBOX_SOCKET_PATH
+from .sandbox_ipc import SandboxSecurityIpc
+from .security_policy import AiRiskAssessment, AiRiskEngine, RiskLevel, SecurityPolicy, load_policy
+
+
+_FAIL_OPEN_PANEL_SHOWN = False
+
+
+@dataclass
+class SecurityDecision:
+    """最终执行决策。
+
+    Attributes:
+        level:      评估得到的风险等级。
+        allow:      是否允许执行命令。
+        require_confirmation: 是否在执行前需要用户确认。
+        analysis:   详细分析数据，供 UI / 日志使用。
+    """
+
+    level: RiskLevel
+    allow: bool
+    require_confirmation: bool
+    analysis: Dict[str, Any]
+
+
+class SimpleSecurityManager:
+    """基于沙箱 + SecurityPolicy + AiRiskEngine 的统一安全管理器。
+
+    相比旧版 simple_security_manager：
+
+    - 去掉 heuristic_engine / context_analyzer 等旧规则体系，只保留沙箱 + 路径策略；
+    - 风险等级统一使用 RiskLevel(LOW/MEDIUM/HIGH)；
+    - 固定使用 balanced 的确认策略；
+    - 提供 analyze_command_risk / decide 两个核心 API。
+    """
+
+    def __init__(
+        self,
+        *,
+        console: Optional[Console] = None,
+        repo_root: Optional[Path] = None,
+        policy: Optional[SecurityPolicy] = None,
+        use_privileged_sandbox: bool = True,
+        privileged_sandbox_socket: Optional[Path] = None,
+    ) -> None:
+        self.console = console or Console()
+
+        self._policy = policy or load_policy()
+
+        self._repo_root = (repo_root or Path("/")).resolve()
+        self._sandbox_security: Optional[Union[SandboxSecurity, SandboxSecurityIpc]] = None
+        self._sandbox_disabled_reason: Optional[str] = None
+        if not self._policy.enable_sandbox:
+            self._sandbox_disabled_reason = "sandbox_disabled_by_policy"
+
+        sandbox_enabled = bool(self._policy.enable_sandbox)
+        if sandbox_enabled:
+            # 当前不再基于策略推导 bind 白名单：直接使用最小配置。
+            # 只读/读写 bind 的缺省行为由 SandboxExecutor 内部处理。
+            sandbox_config = SandboxConfig(repo_root=self._repo_root)
+            # 普通用户默认优先使用 root 守护进程（IPC）创建沙箱，避免 overlay mount 权限不足。
+            # 若 IPC 不可用，会在 analyze_command_risk() 里捕获并按原逻辑降级。
+            socket_path = (privileged_sandbox_socket or DEFAULT_SANDBOX_SOCKET_PATH)
+            if use_privileged_sandbox and os.geteuid() != 0:
+                self._sandbox_security = SandboxSecurityIpc(
+                    repo_root=self._repo_root,
+                    enabled=True,
+                    socket_path=socket_path,
+                )
+            else:
+                self._sandbox_security = SandboxSecurity(
+                    repo_root=self._repo_root,
+                    enabled=True,
+                    config=sandbox_config,
+                )
+
+        self._ai_engine = AiRiskEngine(self._policy)
+        self._fallback_evaluator = CommandFallbackEvaluator(self._policy)
+
+        # 固定为 balanced 的确认策略
+        self._config: Dict[str, Any] = {
+            "confirm_for_low": False,
+            "confirm_for_medium": True,
+            "confirm_for_high": True,
+            "show_low_warnings": True,
+        }
+
+    def _show_fail_open_panel_once(self, analysis: Dict[str, Any]) -> None:
+        global _FAIL_OPEN_PANEL_SHOWN
+        if _FAIL_OPEN_PANEL_SHOWN:
+            return
+
+        # Only show for interactive/common user sessions.
+        try:
+            if os.geteuid() == 0:
+                return
+        except Exception:
+            return
+
+        sandbox_info = analysis.get("sandbox") if isinstance(analysis, dict) else None
+        reason = "unknown"
+        error = None
+        if isinstance(sandbox_info, dict):
+            reason = str(sandbox_info.get("reason") or "unknown")
+            error = sandbox_info.get("error")
+
+        # 普通用户场景下：
+        # - 如果是 IPC 不可用，通常是 aish-sandbox.socket 未安装/未启用/未运行。
+        # - 如果是本地 overlay/bwrap 失败，则多半确实需要 root/mount 权限。
+        show_error = True
+        display_reason = reason
+        if os.geteuid() != 0:
+            if reason == "sandbox_ipc_unavailable":
+                display_reason = t("security.sandbox_unavailable.ipc_unavailable")
+            elif reason == "sandbox_ipc_failed":
+                display_reason = t("security.sandbox_unavailable.ipc_failed")
+            elif reason == "sandbox_execute_failed":
+                display_reason = t("security.sandbox_unavailable.sandbox_execute_failed")
+            elif reason in {
+                "overlay_mount_failed",
+                "overlay_perm_failed",
+                "bubblewrap_failed",
+                "sandbox_requires_root",
+                "sandbox_unavailable",
+            }:
+                display_reason = t("security.sandbox_unavailable.root_required")
+                # 这类错误往往是系统权限/内核限制，原始错误信息可读性一般。
+                show_error = False
+
+        details = (
+            "\n[dim]" + t("security.sandbox_unavailable.reason", reason=display_reason) + "[/dim]"
+            if display_reason
+            else ""
+        )
+        if error and show_error:
+            details += "\n[dim]" + t("security.sandbox_unavailable.error", error=str(error)) + "[/dim]"
+
+        message_lines = [
+            t("security.sandbox_unavailable.line1"),
+            t("security.sandbox_unavailable.line2"),
+        ]
+        if reason in {"sandbox_disabled_by_policy", "sandbox_disabled"}:
+            message_lines = [
+                t("security.sandbox_unavailable.policy_line1"),
+                t("security.sandbox_unavailable.policy_line2"),
+            ]
+
+        self.console.print(
+            Panel(
+                "\n".join(message_lines) + details,
+                title=t("security.sandbox_unavailable.title"),
+                border_style="yellow",
+            )
+        )
+        _FAIL_OPEN_PANEL_SHOWN = True
+
+    def _build_command_fallback_result(
+        self,
+        *,
+        command: str,
+        analysis: Dict[str, Any],
+        sandbox: Dict[str, Any],
+        reason_key: str,
+        reason_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[RiskLevel, Dict[str, Any]]:
+        fallback = self._fallback_evaluator.assess(command)
+
+        reasons = [t(reason_key, **(reason_kwargs or {}))]
+        if fallback.hits:
+            reasons.append(
+                t(
+                    "security.risk_reason.command_fallback_matched",
+                    count=len(fallback.hits),
+                )
+            )
+        if fallback.dangerous_command_triggered:
+            reasons.append(t("security.risk_reason.command_fallback_dangerous_command"))
+        if fallback.invalid_rule_ids:
+            reasons.append(
+                t(
+                    "security.risk_reason.command_fallback_invalid_rule_matched",
+                    count=len(fallback.invalid_rule_ids),
+                )
+            )
+        elif fallback.paths:
+            reasons.append(t("security.risk_reason.command_fallback_unmatched"))
+        elif not fallback.blacklist_triggered:
+            reasons.append(t("security.risk_reason.command_fallback_not_targeted"))
+        else:
+            reasons.append(t("security.risk_reason.command_fallback_no_path"))
+
+        analysis["mode"] = "command_fallback"
+        analysis["risk_level"] = fallback.level.value
+        analysis["reasons"] = reasons
+        analysis["sandbox"] = sandbox
+        analysis["matched_paths"] = fallback.paths
+        analysis["matched_rules"] = [
+            {
+                "path": hit.path,
+                "rule_id": hit.rule_id,
+                "rule_name": hit.rule_name,
+                "risk": hit.risk.value,
+                "reason": hit.reason,
+            }
+            for hit in fallback.hits
+        ]
+        analysis["matched_invalid_rule_ids"] = fallback.invalid_rule_ids
+        analysis["fail_open"] = False
+        return fallback.level, analysis
+
+    # ------------------------------------------------------------------
+    # 核心评估 API
+    # ------------------------------------------------------------------
+
+    def analyze_command_risk(
+        self,
+        command: str,
+        *,
+        is_ai_command: bool = False,
+        cwd: Optional[Path] = None,
+    ) -> Tuple[RiskLevel, Dict[str, Any]]:
+        """评估命令风险。
+
+        - AI 命令：使用沙箱 + AiRiskEngine + SecurityPolicy；
+        - 非 AI 命令：目前视为 LOW，并给出简要提示（未来可扩展）。
+        """
+
+        analysis: Dict[str, Any] = {
+            "is_ai_command": is_ai_command,
+            "risk_level": RiskLevel.LOW.value,
+            "reasons": [],
+            "changes": [],
+            "mode": "sandbox",
+            "sandbox": {"enabled": False},
+            "fail_open": False,
+        }
+
+        if not is_ai_command:
+            return RiskLevel.LOW, analysis
+
+        effective_cwd = (cwd or self._repo_root).resolve()
+
+        # 以下为 AI 命令路径：
+        # 如果沙箱关闭、不可用或执行失败，则无法获取变更信息做风险评估。
+        # 在此情况下，系统将使用“命令+路径兜底”做 best-effort 风险判断。
+        if not self._sandbox_security or not self._sandbox_security.enabled:
+            reason = self._sandbox_disabled_reason or "sandbox_disabled"
+            reason_key = (
+                "security.risk_reason.sandbox_disabled_by_policy"
+                if reason == "sandbox_disabled_by_policy"
+                else "security.risk_reason.sandbox_disabled"
+            )
+            return self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={"enabled": False, "reason": reason},
+                reason_key=reason_key,
+            )
+
+        # 当前沙箱实现要求 cwd 必须在 repo_root 下（否则内部会报错/退出）。
+        # 为避免相对路径误判，这里遇到不满足条件时安全降级为“需要人工确认”。
+        if not effective_cwd.is_relative_to(self._repo_root):
+            level, analysis = self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={
+                    "enabled": False,
+                    "reason": "cwd_outside_repo_root",
+                    "repo_root": str(self._repo_root),
+                    "cwd": str(effective_cwd),
+                },
+                reason_key="security.risk_reason.cwd_outside_repo_root",
+                reason_kwargs={
+                    "cwd": str(effective_cwd),
+                    "root": str(self._repo_root),
+                },
+            )
+            if os.geteuid() != 0:
+                self._show_fail_open_panel_once(analysis)
+            return level, analysis
+
+        # 在 repo_root 视图下执行 AI 命令
+        try:
+            sandbox_result = self._sandbox_security.run(command, cwd=effective_cwd)
+        except SandboxUnavailableError as exc:
+            # Sandbox is unavailable (commonly due to missing mount/unshare privileges).
+            # Disable it for subsequent commands to avoid repeated noisy failures.
+            # IPC 不可用往往是服务未启动/短暂不可用：不要永久禁用，允许用户启动服务后自动恢复。
+            should_disable = True
+            if isinstance(self._sandbox_security, SandboxSecurityIpc) and exc.reason in {
+                "sandbox_ipc_unavailable",
+                "sandbox_ipc_failed",
+                "sandbox_execute_failed",
+                "sandbox_ipc_timeout",
+                "sandbox_timeout",
+            }:
+                should_disable = False
+
+            if self._sandbox_security is not None and should_disable:
+                self._sandbox_security.set_enabled(False)
+                self._sandbox_disabled_reason = exc.reason
+            level, analysis = self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={
+                    "enabled": False,
+                    "reason": exc.reason,
+                    "error": exc.details or str(exc),
+                },
+                reason_key="security.risk_reason.sandbox_unavailable",
+            )
+            if os.geteuid() != 0 and exc.reason not in {
+                "sandbox_execute_failed",
+                "sandbox_ipc_timeout",
+                "sandbox_timeout",
+            }:
+                self._show_fail_open_panel_once(analysis)
+            return level, analysis
+        except Exception as exc:
+            level, analysis = self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={
+                    "enabled": False,
+                    "reason": "sandbox_exception",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                reason_key="security.risk_reason.sandbox_exception",
+            )
+            if os.geteuid() != 0:
+                self._show_fail_open_panel_once(analysis)
+            return level, analysis
+        if sandbox_result is None:
+            level, analysis = self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={"enabled": False, "reason": "sandbox_failed"},
+                reason_key="security.risk_reason.sandbox_failed",
+            )
+            if os.geteuid() != 0:
+                self._show_fail_open_panel_once(analysis)
+            return level, analysis
+
+        # Sandbox returned a result but the command itself failed.
+        # In this case, we cannot reliably assess the real side effects.
+        # Fallback to command+path mode because side effects cannot be reliably assessed.
+        if int(getattr(sandbox_result.sandbox, "exit_code", 1) or 0) != 0:
+            return self._build_command_fallback_result(
+                command=command,
+                analysis=analysis,
+                sandbox={
+                    "enabled": False,
+                    "reason": "sandbox_execute_failed",
+                    "exit_code": int(sandbox_result.sandbox.exit_code),
+                },
+                reason_key="security.risk_reason.sandbox_unavailable",
+            )
+
+        ai_assessment: AiRiskAssessment = self._ai_engine.assess(command, sandbox_result.sandbox)
+
+        analysis["risk_level"] = ai_assessment.level.value
+        analysis["reasons"] = list(ai_assessment.reasons)
+        analysis["changes"] = [
+            {"path": ch.path, "kind": ch.kind} for ch in ai_assessment.changes
+        ]
+        analysis["sandbox"] = {
+            "enabled": True,
+            "exit_code": sandbox_result.sandbox.exit_code,
+        }
+
+        return ai_assessment.level, analysis
+
+    def decide(
+        self,
+        command: str,
+        *,
+        is_ai_command: bool = False,
+        cwd: Optional[Path] = None,
+    ) -> SecurityDecision:
+        """综合评估并给出最终执行决策。"""
+
+        level, analysis = self.analyze_command_risk(
+            command,
+            is_ai_command=is_ai_command,
+            cwd=cwd,
+        )
+
+        if level == RiskLevel.HIGH:
+            allow = False
+            require_confirmation = False
+        elif level == RiskLevel.MEDIUM:
+            allow = True
+            require_confirmation = self._config["confirm_for_medium"]
+        else:  # LOW
+            allow = True
+            require_confirmation = self._config["confirm_for_low"]
+
+        return SecurityDecision(level=level, allow=allow, require_confirmation=require_confirmation, analysis=analysis)
+
+__all__ = ["SimpleSecurityManager", "SecurityDecision"]

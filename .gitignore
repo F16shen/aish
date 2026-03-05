@@ -1,0 +1,90 @@
+# Development files
+.env
+*.log
+.vscode/
+.idea/
+.claude/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+dist-deb/
+dist-deb-*/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec.backup
+
+# Debian packaging build artifacts (debhelper)
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/tmp/
+debian/*.debhelper
+debian/*.debhelper.log
+debian/*.substvars
+debian/files
+debian/aish
+debian/aish-sandbox
+
+# Debian packaging local venv for vendoring
+debian/.vendor-pip-venv/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Virtual environments
+venv/
+.venv/
+.env/
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+prefetched_data/
+
+.claude-trace/
+
+# github copilot
+.github
+tmp

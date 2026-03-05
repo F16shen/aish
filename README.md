@@ -14,7 +14,7 @@
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-![](./docs/images/demo.gif)
+![](./docs/images/demo_show.gif)
 
 **一个真实可用的 AI Shell：完整 PTY + 可配置的安全与风险控制**
 

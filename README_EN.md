@@ -14,7 +14,7 @@ Empower the Shell to think. Evolve Operations.
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](#)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-![](./docs/images/demo.gif)
+![](./docs/images/demo_show.gif)
 
 **A Real AI Shell: Complete PTY + Configurable Security & Risk Control**
 
