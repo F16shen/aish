@@ -462,7 +462,6 @@ observability:
 - **文档**：[docs.aishell.ai](https://docs.aishell.ai)
 - **GitHub**：[github.com/AI-Shell-Team/aish](https://github.com/AI-Shell-Team/aish)
 - **Discord**：[discord.gg/aish](https://discord.gg/aish)
-- **博客**：[blog.aishell.ai](https://blog.aishell.ai)
 
 ---
 
