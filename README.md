@@ -61,8 +61,8 @@ Empower the Shell to think. Evolve Operations.
 | 🧩 **Skills Support** | ✅ Hot Loading | ✅ |
 | 🖥️ **Native Terminal Integration** | ✅ Full PTY Support | ⚠️ Limited Support |
 | 🛡️ **Security Risk Assessment** | ✅ Security Confirmation | ✅ Security Confirmation |
-| 🌐 **Local Model Support** | ✅ Fully Supported | ❌ |
-| 📁 **File Operation Tools** | ✅ Read/Write/Edit | ✅ Full Support |
+| 🌐 **Local Model Support** | ✅ Fully Supported | Fully Supported  |
+| 📁 **File Operation Tools** | ✅ Minimal Essential Suppport | ✅ Full Support |
 | 💰 **Completely Free** | ✅ Open Source | ❌ Paid Service |
 | 📊 **Observability** | ✅ Langfuse Optional | ⚠️ Built-in |
 | 🌍 **Multi-language Output** | ✅ Auto Detection | ✅ |
