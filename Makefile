@@ -34,21 +34,21 @@ deps:
 
 dev:
 	@echo "📦 Installing dev dependencies..."
-	uv sync --all-extras
+	uv sync --group dev
 
 test:
 	@echo "🧪 Running tests..."
-	uv run pytest tests/ -v
+	uv run --group dev pytest tests/ -v
 
 lint:
 	@echo "🔍 Running linting..."
-	uv run ruff check src/ tests/
-	uv run mypy src/
+	uv run --group dev ruff check src/ tests/
+	uv run --group dev mypy src/
 
 format:
 	@echo "🎨 Formatting code..."
-	uv run ruff format src/ tests/
-	uv run ruff check --fix src/ tests/
+	uv run --group dev ruff format src/ tests/
+	uv run --group dev ruff check --fix src/ tests/
 
 build:
 	@echo "📦 Building Python wheel..."

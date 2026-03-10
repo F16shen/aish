@@ -753,6 +753,11 @@ def display_security_panel(shell: Any, data: dict, panel_mode: str = "confirm") 
         if isinstance(security_analysis, dict)
         else False
     )
+    fallback_mode = (
+        str(security_analysis.get("mode", ""))
+        if isinstance(security_analysis, dict)
+        else ""
+    )
 
     # UX: for low-risk notices, do not show the security panel at all.
     # Keep confirm/blocked panels so users still have context when needed.
@@ -790,6 +795,7 @@ def display_security_panel(shell: Any, data: dict, panel_mode: str = "confirm") 
         and security_analysis
         and not sandbox_enabled
         and not fallback_rule_matched
+        and fallback_mode != "command_fallback"
     ):
         if sandbox_reason == "sandbox_execute_failed":
             hint = t("shell.security.fallback.sandbox_execute_failed")
