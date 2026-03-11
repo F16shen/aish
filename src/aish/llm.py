@@ -808,6 +808,8 @@ class LLMSession:
                     "meta": tool_result.meta,
                 },
                 "tool_name": tool_name,
+                # Include raw ToolResult.data for agents that need structured data
+                "result_data": getattr(tool_result, "data", None),
             },
         )
         return tool_result

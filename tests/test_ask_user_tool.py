@@ -1,4 +1,3 @@
-import json
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -32,7 +31,8 @@ def test_ask_user_tool_selected(monkeypatch):
     )
 
     assert result.ok is True
-    payload = json.loads(result.output)
+    payload = result.data
+    assert result.output == "User selected: B"
     assert payload["value"] == "b"
     assert payload["label"] == "B"
     assert payload["status"] == "selected"
@@ -99,7 +99,8 @@ def test_ask_user_tool_custom_input_allowed(monkeypatch):
     )
 
     assert result.ok is True
-    payload = json.loads(result.output)
+    payload = result.data
+    assert result.output == "User input: mango"
     assert payload["value"] == "mango"
     assert payload["status"] == "custom"
 

@@ -10,6 +10,7 @@ class ToolResult:
     output: str = ""
     code: Optional[int] = None
     meta: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
 
     def render_for_llm(self) -> str:
         return self.output

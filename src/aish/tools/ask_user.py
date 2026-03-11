@@ -226,24 +226,33 @@ class AskUserTool(ToolBase):
         allowed_values = {o["value"] for o in normalized_options}
         if isinstance(selected, str) and selected in allowed_values:
             label_lookup = {o["value"]: o["label"] for o in normalized_options}
-            payload = {
-                "value": selected,
-                "label": label_lookup.get(selected, selected),
-                "status": "selected",
-            }
-            return ToolResult(ok=True, output=json.dumps(payload, ensure_ascii=False))
+            label = label_lookup.get(selected, selected)
+            # Return a clear, LLM-friendly message instead of JSON
+            # Store the structured data in the data field for potential future use
+            return ToolResult(
+                ok=True,
+                output=f"User selected: {label}",
+                data={
+                    "value": selected,
+                    "label": label,
+                    "status": "selected",
+                },
+            )
         if (
             allow_custom_input
             and isinstance(selected, str)
             and selected.strip()
             and selected not in allowed_values
         ):
-            payload = {
-                "value": selected,
-                "label": selected,
-                "status": "custom",
-            }
-            return ToolResult(ok=True, output=json.dumps(payload, ensure_ascii=False))
+            return ToolResult(
+                ok=True,
+                output=f"User input: {selected}",
+                data={
+                    "value": selected,
+                    "label": selected,
+                    "status": "custom",
+                },
+            )
 
         reason = (
             "cancelled"

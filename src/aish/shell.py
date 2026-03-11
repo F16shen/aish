@@ -67,6 +67,8 @@ from .shell_enhanced.shell_prompt_io import \
 from .shell_enhanced.shell_prompt_io import \
     handle_ask_user_required as _prompt_handle_ask_user_required
 from .shell_enhanced.shell_prompt_io import \
+    handle_ask_user_required_inline as _prompt_handle_ask_user_required_inline
+from .shell_enhanced.shell_prompt_io import \
     handle_tool_confirmation_required as \
     _prompt_handle_tool_confirmation_required
 from .shell_enhanced.shell_pty_executor import \
@@ -234,6 +236,9 @@ class AIShell:
             enable_token_estimation=getattr(config, "enable_token_estimation", True),
         )
 
+        # TUI mode support (set externally when --tui is enabled)
+        self._tui_app: Optional[Any] = None
+
         # Flag to track if we're currently processing input
         self.processing_input = False
 
@@ -259,6 +264,9 @@ class AIShell:
         self._content_preview_active = False
         # Track whether the cursor is at the start of a new line.
         self._at_line_start = True
+
+        # Inline selection UI state (for ask_user in main prompt)
+        self._inline_selection: dict | None = None  # Active selection UI state
 
         # 仅保留沙箱安全体系：repo_root 默认绑定到当前工作目录。
         self.security_manager = SimpleSecurityManager(
@@ -312,6 +320,27 @@ class AIShell:
         self.setup_llm()
 
         self.help_manager = HelpManager(self.console)
+
+        # Plan mode components
+        from .plans.manager import PlanManager
+        from .plans.plan_agent import PlanAgent
+
+        self.plan_manager = PlanManager()
+        self.plan_agent = PlanAgent(
+            config=config,
+            model_id=config.model,
+            skill_manager=skill_manager,
+            plan_manager=self.plan_manager,
+            shell=self,  # Pass shell reference for TUI updates
+            api_base=config.api_base,
+            api_key=config.api_key,
+            parent_event_callback=self.handle_llm_event,
+            cancellation_token=self.llm_session.cancellation_token,
+            history_manager=self.history_manager,
+        )
+
+        # Register plan agent to LLM session for tool access
+        self.llm_session.tools[self.plan_agent.name] = self.plan_agent
 
         self.task_counter = 0
         # Per-operation cancel scope (reset for each user request)
@@ -512,6 +541,11 @@ class AIShell:
                 cwd = home_dir
             except Exception:
                 cwd = "<deleted>"
+
+        # Update TUI status bar with current directory
+        if self._tui_app is not None:
+            self._tui_app.set_cwd(cwd)
+
         prompt_style = getattr(self.config, "prompt_style", "🚀")
         return f"{prompt_style} {os.path.basename(cwd)} > "
 
@@ -642,7 +676,16 @@ class AIShell:
 
     def print_welcome(self):
         """Print welcome message"""
-        self.console.print(build_welcome_renderable(self.config))
+        # In TUI mode, add welcome to content area instead of direct print
+        if self._tui_app is not None:
+            from aish import __version__
+            from aish.tui.types import ContentLineType
+
+            welcome_text = f"AI Shell v{__version__} | Model: {self.config.model or 'not configured'}"
+            self._tui_app.add_content(welcome_text, ContentLineType.SYSTEM)
+            self._tui_app.add_content("Type commands or use ; for AI mode. Press Ctrl+C twice to exit.", ContentLineType.SYSTEM)
+        else:
+            self.console.print(build_welcome_renderable(self.config))
 
     async def execute_command_with_pty(self, command: str) -> CommandResult:
         """Execute a command with PTY support and enhanced error handling."""
@@ -1511,6 +1554,10 @@ class AIShell:
             self.session_record.model = new_model
         if self.config_manager is not None:
             self.config_manager.set_model(new_model)
+
+        # Update TUI status bar with new model
+        if self._tui_app is not None:
+            self._tui_app.update_status(model=new_model)
 
         message = t("shell.model.switch_success", model=new_model)
         self.console.print(message, style="green")
@@ -3151,8 +3198,80 @@ class AIShell:
         return _prompt_handle_tool_confirmation_required(self, event)
 
     def handle_ask_user_required(self, event: LLMEvent) -> LLMCallbackResult:
-        """Handle ask_user event - show interactive single-choice UI."""
+        """Handle ask_user event - show interactive single-choice UI.
+
+        Uses inline UI at bottom of screen if config.tui.inline_ui is True,
+        otherwise uses the traditional modal dialog.
+        """
+        # Check if inline UI is enabled in config (default to True)
+        try:
+            inline_ui = getattr(getattr(self.config, "tui", None), "inline_ui", True)
+        except Exception:
+            inline_ui = True
+        if inline_ui:
+            return _prompt_handle_ask_user_required_inline(self, event)
         return _prompt_handle_ask_user_required(self, event)
+
+    def request_user_choice(self, data: dict) -> tuple[str | None, str]:
+        """Request a user choice via the shell UI.
+
+        This method is used by plan_agent to get user input for plan confirmation.
+
+        Args:
+            data: Dictionary containing:
+                - prompt: The question to ask
+                - options: List of option dicts with 'value' and 'label'
+                - default: Default option value
+                - title: Optional title for the selection
+                - allow_cancel: Whether to allow cancellation
+                - allow_custom_input: Whether to allow custom input
+
+        Returns:
+            (selected_value, status) where status is one of:
+            - "selected": User made a selection
+            - "cancelled": User cancelled
+            - "unavailable": UI not available (non-TTY)
+            - "error": An error occurred
+        """
+        import sys
+
+        # Check if we have a terminal available
+        # Note: In plan_agent context, we may be running in a ThreadPoolExecutor
+        # but still have access to the terminal
+        try:
+            has_tty = sys.stdin.isatty() and sys.stdout.isatty()
+        except Exception:
+            has_tty = False
+
+        # If no TTY but we have a running shell, try anyway
+        # (This handles the case where plan_agent runs in ThreadPoolExecutor)
+        if not has_tty and not self.running:
+            return None, "unavailable"
+
+        try:
+            # Create event and handle it
+            event = LLMEvent(
+                event_type=LLMEventType.ASK_USER_REQUIRED,
+                data=data,
+                timestamp=time.time(),
+            )
+            self.handle_ask_user_required(event)
+
+            # Check if user made a selection
+            selected_value = data.get("selected_value")
+            if isinstance(selected_value, str) and selected_value:
+                return selected_value, "selected"
+
+            # Check for custom input
+            custom_input = data.get("custom_input")
+            if isinstance(custom_input, str) and custom_input.strip():
+                return custom_input.strip(), "selected"
+
+            return None, "cancelled"
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            return None, "error"
 
     def _display_security_panel(self, data: dict, panel_mode: str = "confirm"):
         """Display rich security panel for AI tool calls."""

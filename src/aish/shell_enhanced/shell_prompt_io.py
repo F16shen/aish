@@ -93,29 +93,107 @@ async def get_user_input(
     # Track whether correction was triggered
     correction_triggered = [False]
 
-    # 创建 callable rprompt - 同时显示状态消息和 AI 提示
+    # Create bottom toolbar for TUI mode - shows status bar at bottom
     from prompt_toolkit.application import get_app_or_none
-    from prompt_toolkit.formatted_text import HTML
+    from prompt_toolkit.formatted_text import HTML, merge_formatted_text
 
-    def get_rprompt():
-        # 优先显示状态消息
-        msg = self.interruption_manager.get_prompt_message()
-        if msg:
-            return HTML(msg)
+    def get_bottom_toolbar():
+        """Get bottom toolbar content for prompt.
 
-        # 无状态消息时，检查是否显示 AI 提示
-        try:
-            app = get_app_or_none()
-            if app is not None:
-                buffer = app.current_buffer
-                if buffer and len(buffer.document.text) > 0:
-                    return None  # 有输入时不显示提示
-        except Exception:
-            pass
+        Shows status bar with model, mode, cwd and hint information.
+        In non-TUI mode, only shows hint on the right side.
+        """
+        # Build status bar parts
+        parts = []
 
-        # 默认显示 AI 提示
-        hint_text = t("shell.prompt.ai_hint")
-        return HTML(f"<gray>{hint_text}</gray>")
+        # TUI mode: show full status bar
+        if self._tui_app is not None:
+            status = self._tui_app.state.status
+            tui_settings = self._tui_app.tui_settings
+
+            # Model name
+            if status.model:
+                model_display = status.model
+                if len(model_display) > 20:
+                    model_display = model_display[:17] + "..."
+                parts.append(HTML(f'<style fg="gray">[Model: {model_display}]</style>'))
+
+            # Mode (PTY/AI/PLAN) - unified gray style
+            parts.append(HTML(f'<style fg="gray">[Mode: {status.mode}]</style>'))
+
+            # Current working directory
+            if status.cwd and tui_settings.show_cwd:
+                cwd_display = status.cwd
+                if len(cwd_display) > 30:
+                    cwd_display = "..." + cwd_display[-27:]
+                parts.append(HTML(f'<style fg="gray">[{cwd_display}]</style>'))
+
+            # Plan queue progress (compact) - unified gray style
+            plan_queue_state = self._tui_app.get_plan_queue_state()
+            if plan_queue_state.is_visible:
+                completed, total, percent = plan_queue_state.get_progress_summary()
+                if total > 0:
+                    parts.append(
+                        HTML(
+                            f'<style fg="gray">[Plan: {completed}/{total} ({percent}%)]</style>'
+                        )
+                    )
+
+        # Get hint message (for both TUI and non-TUI mode)
+        hint = self.interruption_manager.get_prompt_message()
+        if hint is None:
+            # Check if user has input - hide hint when typing
+            try:
+                app = get_app_or_none()
+                if app is not None:
+                    buffer = app.current_buffer
+                    if buffer and len(buffer.document.text) > 0:
+                        hint = None  # Hide hint when user is typing
+            except Exception:
+                pass
+
+            # Show default ai_hint if still None (for both TUI and non-TUI mode)
+            if hint is None:
+                hint = t("shell.prompt.ai_hint")
+
+        if hint:
+            # hint format from interruption_manager is like:
+            # <gray>&lt;press Ctrl+C again to exit&gt;</gray>
+            # We need to convert this to proper prompt_toolkit format
+            # Replace HTML entities with their characters
+            hint = hint.replace("&lt;", "<").replace("&gt;", ">")
+            # Now hint is: <gray><press Ctrl+C again to exit></gray>
+            # But <press...> is not a valid tag, so we need to escape the inner < >
+            # Replace style tags with placeholders, escape content, then restore
+            if "<gray>" in hint and "</gray>" in hint:
+                # Extract the content between <gray> and </gray>
+                start = hint.find("<gray>") + 6
+                end = hint.find("</gray>")
+                content = hint[start:end]
+                # Escape the content for XML
+                content = content.replace("<", "&lt;").replace(">", "&gt;")
+                # Rebuild with proper format
+                hint = f'<style fg="gray">{content}</style>'
+                parts.append(HTML(hint))
+            elif "<" in hint and ">" in hint:
+                # Has some other HTML tags, use as-is
+                parts.append(HTML(hint))
+            else:
+                # Plain text
+                parts.append(HTML(f'<style fg="gray">[{hint}]</style>'))
+
+        # If no parts, return None
+        if not parts:
+            return None
+
+        # Merge all parts with space separators
+        result = []
+        for i, part in enumerate(parts):
+            if i > 0:
+                result.append(HTML(" "))
+            result.append(part)
+
+        return merge_formatted_text(result)
 
     # 创建后台刷新线程
     def refresh_in_background():
@@ -254,9 +332,9 @@ async def get_user_input(
     try:
         result = await self.session.prompt_async(
             base_prompt,
-            rprompt=get_rprompt,
             handle_sigint=False,
             key_bindings=kb,
+            bottom_toolbar=get_bottom_toolbar,
             default=default_text,
         )
         if result is None:
@@ -296,9 +374,6 @@ async def get_user_input(
             elif interrupt_action == InterruptAction.REQUEST_EXIT:
                 return await self.get_user_input(prompt_text, _recursion_depth + 1)
 
-        elif action == "esc_cleared":
-            return ""
-
         # If action is None (unexpected EOFError), re-raise to handle properly
         if action is None:
             raise
@@ -307,7 +382,7 @@ async def get_user_input(
     except KeyboardInterrupt:
         raise
     finally:
-        # 停止后台刷新线程
+        # Stop the background refresh thread before leaving the prompt.
         refresh_stop_event.set()
 
 
@@ -702,6 +777,181 @@ def handle_ask_user_required(shell: Any, event: LLMEvent) -> LLMCallbackResult:
     # Mutate event.data so LLMSession can read the selection without changing callback return types.
     try:
         data["selected_value"] = selected_value
+    except Exception:
+        pass
+
+    return LLMCallbackResult.CONTINUE
+
+
+def handle_ask_user_required_inline(shell: Any, event: LLMEvent) -> LLMCallbackResult:
+    """Handle ask_user event with status bar style UI.
+
+    This displays a multi-line selection UI at the bottom of the screen,
+    styled like the status bar with gray background.
+    """
+    self = shell
+
+    # Guard: check if data already has selected_value (prevents duplicate calls)
+    if "selected_value" in event.data and event.data["selected_value"] is not None:
+        return LLMCallbackResult.CONTINUE
+
+    # Stop any active Live/animation before prompting.
+    self._stop_animation()
+    if self.current_live:
+        try:
+            self.current_live.update("", refresh=True)
+            self.current_live.stop()
+        finally:
+            self.current_live = None
+
+    self._finalize_content_preview()
+
+    data = event.data or {}
+    prompt = str(data.get("prompt") or "")
+    options = data.get("options") if isinstance(data.get("options"), list) else []
+    default_value = data.get("default")
+    if not isinstance(default_value, str):
+        default_value = None
+    title = str(data.get("title") or t("shell.ask_user.title"))
+    allow_cancel = bool(data.get("allow_cancel", True))
+
+    # Normalize options
+    values: list[tuple[str, str]] = []
+    for item in options:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        label = item.get("label")
+        if isinstance(value, str) and value and isinstance(label, str) and label:
+            values.append((value, label))
+
+    if not values:
+        data["selected_value"] = None
+        return LLMCallbackResult.CONTINUE
+
+    # Set initial selection
+    selected_index = 0
+    if default_value:
+        for i, (v, _) in enumerate(values):
+            if v == default_value:
+                selected_index = i
+                break
+
+    selected_value: str | None = None
+
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import HSplit, Layout, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.styles import Style
+
+        # Flush any pending key presses
+        try:
+            if sys.stdin.isatty():
+                termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        except Exception:
+            pass
+
+        # Selection state
+        state = {"index": selected_index}
+
+        kb = KeyBindings()
+
+        @kb.add("up", eager=True)
+        def _up(event):
+            state["index"] = max(0, state["index"] - 1)
+            event.app.invalidate()
+
+        @kb.add("down", eager=True)
+        def _down(event):
+            state["index"] = min(len(values) - 1, state["index"] + 1)
+            event.app.invalidate()
+
+        @kb.add("enter", eager=True)
+        def _select(event):
+            event.app.exit(result=values[state["index"]][0])
+
+        if allow_cancel:
+
+            @kb.add("escape", eager=True)
+            def _cancel(event):
+                event.app.exit(result=None)
+
+        def get_content():
+            """Build status bar style content for selection UI."""
+            import html as html_module
+            from prompt_toolkit.formatted_text import merge_formatted_text
+
+            lines = []
+
+            # Title line with status bar style
+            title_text = title or prompt
+            if title_text:
+                # Escape special characters for HTML
+                safe_title = html_module.escape(title_text)
+                lines.append(HTML(f'<style fg="cyan" bg="ansiblack">{safe_title}</style>\n'))
+
+            # Option lines with status bar style (gray background)
+            for idx, (value, label) in enumerate(values):
+                # Escape special characters for HTML
+                safe_label = html_module.escape(label)
+                if idx == state["index"]:
+                    # Selected: cyan foreground, bold, with arrow
+                    lines.append(
+                        HTML(f'<style fg="cyan" bg="ansiblack" bold="">  ➤ {safe_label}</style>\n')
+                    )
+                else:
+                    # Unselected: dim foreground
+                    lines.append(HTML(f'<style fg="gray" bg="ansiblack">    {safe_label}</style>\n'))
+
+            # Hint line with status bar style
+            hint_parts = ["  "]
+            hint_parts.append("↑↓ Select")
+            hint_parts.append(" · Enter Confirm")
+            if allow_cancel:
+                hint_parts.append(" · Esc Cancel")
+            hint = "".join(hint_parts)
+            lines.append(HTML(f'<style fg="gray" bg="ansiblack">{hint}</style>'))
+
+            return merge_formatted_text(lines)
+
+        # Create a dynamic control that updates on each render
+        control = FormattedTextControl(get_content)
+        window = Window(content=control, dont_extend_height=True, style="class:status-bar")
+        root = HSplit([window])
+
+        # Style with status bar appearance
+        style = Style.from_dict(
+            {
+                "status-bar": "bg:#1e1e1e",
+            }
+        )
+
+        app = Application(
+            layout=Layout(root),
+            key_bindings=kb,
+            full_screen=False,
+            style=style,
+        )
+
+        try:
+            app.input.flush()
+            app.input.flush_keys()
+        except Exception:
+            pass
+
+        selected_value = app.run(in_thread=True)
+
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        selected_value = None
+
+    # Mutate event.data so LLMSession can read the selection
+    try:
+        event.data["selected_value"] = selected_value
     except Exception:
         pass
 
