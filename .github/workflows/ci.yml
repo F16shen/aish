@@ -55,6 +55,39 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  cross-platform-smoke:
+    name: Cross-platform smoke (${{ matrix.os }})
+    needs: lint-test
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Smoke test import
+        run: |
+          uv run python -c "import platform; import aish; print('ok', platform.system(), platform.machine())"
+
   build-bundle:
     name: Build bundle (${{ matrix.arch }})
     strategy:
@@ -66,7 +99,9 @@ jobs:
           - arch: arm64
             runs_on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs_on }}
-    needs: lint-test
+    needs:
+      - lint-test
+      - cross-platform-smoke
     container:
       image: rockylinux:8
     defaults:
@@ -84,13 +119,33 @@ jobs:
         run: |
           VERSION="0.0.0+${GITHUB_SHA::8}"
           OUTPUT_DIR="artifacts/${{ matrix.arch }}"
-          VERSION="$VERSION" ARCH="${{ matrix.arch }}" OUTPUT_DIR="$OUTPUT_DIR" ./packaging/build_bundle.sh
+          VERSION="$VERSION" PLATFORM="linux" ARCH="${{ matrix.arch }}" OUTPUT_DIR="$OUTPUT_DIR" ./packaging/build_bundle.sh
           tar -tf "$OUTPUT_DIR/aish-${VERSION}-linux-${{ matrix.arch }}.tar.gz" >/dev/null
+
+      - name: Smoke test bundle install
+        run: |
+          VERSION="0.0.0+${GITHUB_SHA::8}"
+          OUTPUT_DIR="artifacts/${{ matrix.arch }}"
+          BUNDLE="aish-${VERSION}-linux-${{ matrix.arch }}"
+          EXTRACT_DIR="$PWD/build/install-smoke/${{ matrix.arch }}"
+          INSTALL_ROOT="$PWD/build/install-root/${{ matrix.arch }}"
+
+          rm -rf "$EXTRACT_DIR" "$INSTALL_ROOT"
+          mkdir -p "$EXTRACT_DIR" "$INSTALL_ROOT"
+
+          tar -xzf "$OUTPUT_DIR/${BUNDLE}.tar.gz" -C "$EXTRACT_DIR"
+          AISH_INSTALL_ROOT="$INSTALL_ROOT" AISH_SKIP_SYSTEMD=1 "$EXTRACT_DIR/${BUNDLE}/install.sh"
+
+          test -x "$INSTALL_ROOT/usr/bin/aish"
+          test -x "$INSTALL_ROOT/usr/bin/aish-sandbox"
+          test -f "$INSTALL_ROOT/etc/aish/security_policy.yaml"
+          test -f "$INSTALL_ROOT/lib/systemd/system/aish-sandbox.service"
+          test -f "$INSTALL_ROOT/lib/systemd/system/aish-sandbox.socket"
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aish-bundle-${{ matrix.arch }}
+          name: aish-linux-${{ matrix.arch }}
           path: |
             artifacts/${{ matrix.arch }}/*
           if-no-files-found: error

@@ -5,12 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOTFS_DIR="${SCRIPT_DIR}/rootfs"
 MIN_GLIBC_VERSION="2.28"
 FORCE_CONFIG_OVERWRITE=0
+INSTALL_ROOT="${AISH_INSTALL_ROOT:-}"
+SKIP_SYSTEMD="${AISH_SKIP_SYSTEMD:-0}"
 
 usage() {
 	cat <<'EOF'
 Usage: sudo ./install.sh [--force-config]
 
 Installs AI Shell binaries, systemd units, default skills, and the security policy.
+
+Environment:
+	AISH_INSTALL_ROOT   Install into a staging root instead of /
+	AISH_SKIP_SYSTEMD   Skip systemd checks and service enablement
 EOF
 }
 
@@ -21,9 +27,21 @@ version_ge() {
 }
 
 require_root() {
+	if [[ -n "$INSTALL_ROOT" ]]; then
+		return
+	fi
 	if [[ "${EUID}" -ne 0 ]]; then
 		echo "This installer must run as root." >&2
 		exit 1
+	fi
+}
+
+target_path() {
+	local absolute_path="$1"
+	if [[ -n "$INSTALL_ROOT" ]]; then
+		printf '%s%s\n' "$INSTALL_ROOT" "$absolute_path"
+	else
+		printf '%s\n' "$absolute_path"
 	fi
 }
 
@@ -51,9 +69,11 @@ check_glibc() {
 check_runtime_dependencies() {
 	require_command bwrap "Install the bubblewrap package before continuing."
 	require_command unshare "Install util-linux before continuing."
-	require_command systemctl "A systemd-based system is required for aish-sandbox.socket."
+	if [[ "$SKIP_SYSTEMD" != "1" ]]; then
+		require_command systemctl "A systemd-based system is required for aish-sandbox.socket."
+	fi
 
-	if [[ ! -d /run/systemd/system ]]; then
+	if [[ "$SKIP_SYSTEMD" != "1" && ! -d /run/systemd/system ]]; then
 		echo "systemd does not appear to be running on this system." >&2
 		exit 1
 	fi
@@ -66,29 +86,36 @@ check_runtime_dependencies() {
 
 install_file() {
 	local source_path="$1"
-	local target_path="$2"
+	local destination_path
+	destination_path="$(target_path "$2")"
 	local mode="$3"
-	install -D -m "$mode" "$source_path" "$target_path"
+	install -D -m "$mode" "$source_path" "$destination_path"
 }
 
 install_config() {
 	local source_path="$1"
-	local target_path="$2"
-	if [[ -f "$target_path" && "$FORCE_CONFIG_OVERWRITE" -ne 1 ]]; then
-		echo "Preserving existing config: ${target_path}"
+	local destination_path
+	destination_path="$(target_path "$2")"
+	if [[ -f "$destination_path" && "$FORCE_CONFIG_OVERWRITE" -ne 1 ]]; then
+		echo "Preserving existing config: ${destination_path}"
 		return
 	fi
-	install_file "$source_path" "$target_path" 0644
+	install_file "$source_path" "$2" 0644
 }
 
 install_tree() {
 	local source_dir="$1"
-	local target_dir="$2"
-	install -d "$target_dir"
-	cp -a "$source_dir/." "$target_dir/"
+	local destination_dir
+	destination_dir="$(target_path "$2")"
+	install -d "$destination_dir"
+	cp -a "$source_dir/." "$destination_dir/"
 }
 
 enable_services() {
+	if [[ "$SKIP_SYSTEMD" == "1" ]]; then
+		echo "Skipping systemd enablement"
+		return
+	fi
 	systemctl daemon-reload
 	systemctl enable aish-sandbox.socket >/dev/null 2>&1 || true
 	if systemctl is-active --quiet aish-sandbox.socket || systemctl is-active --quiet aish-sandbox.service; then
@@ -132,5 +159,10 @@ if [[ -d "$ROOTFS_DIR/usr/share/aish/skills" ]]; then
 fi
 
 enable_services
+
+if [[ -n "$INSTALL_ROOT" ]]; then
+	echo "AI Shell installed successfully into ${INSTALL_ROOT}."
+	exit 0
+fi
 
 echo "AI Shell installed successfully."

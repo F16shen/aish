@@ -6,8 +6,9 @@ cd "$ROOT_DIR"
 
 VERSION="${VERSION:-${1:-0.1.0}}"
 ARCH="${ARCH:-${2:-$(uname -m)}}"
+PLATFORM="${PLATFORM:-${4:-linux}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${3:-dist/release}}"
-BUNDLE_NAME="aish-${VERSION}-linux-${ARCH}"
+BUNDLE_NAME="aish-${VERSION}-${PLATFORM}-${ARCH}"
 STAGE_DIR="build/bundle/${BUNDLE_NAME}"
 ROOTFS_DIR="${STAGE_DIR}/rootfs"
 

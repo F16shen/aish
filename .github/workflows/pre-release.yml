@@ -45,12 +45,34 @@ jobs:
         run: |
           VERSION="${INPUT_VERSION:-0.1.0}"
           OUTPUT_DIR="artifacts/${{ matrix.arch }}"
-          VERSION="$VERSION" ARCH="${{ matrix.arch }}" OUTPUT_DIR="$OUTPUT_DIR" ./packaging/build_bundle.sh
+          VERSION="$VERSION" PLATFORM="linux" ARCH="${{ matrix.arch }}" OUTPUT_DIR="$OUTPUT_DIR" ./packaging/build_bundle.sh
           ls -lah "$OUTPUT_DIR"
+
+      - name: Smoke test bundle install
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          VERSION="${INPUT_VERSION:-0.1.0}"
+          OUTPUT_DIR="artifacts/${{ matrix.arch }}"
+          BUNDLE="aish-${VERSION}-linux-${{ matrix.arch }}"
+          EXTRACT_DIR="$PWD/build/install-smoke/${{ matrix.arch }}"
+          INSTALL_ROOT="$PWD/build/install-root/${{ matrix.arch }}"
+
+          rm -rf "$EXTRACT_DIR" "$INSTALL_ROOT"
+          mkdir -p "$EXTRACT_DIR" "$INSTALL_ROOT"
+
+          tar -xzf "$OUTPUT_DIR/${BUNDLE}.tar.gz" -C "$EXTRACT_DIR"
+          AISH_INSTALL_ROOT="$INSTALL_ROOT" AISH_SKIP_SYSTEMD=1 "$EXTRACT_DIR/${BUNDLE}/install.sh"
+
+          test -x "$INSTALL_ROOT/usr/bin/aish"
+          test -x "$INSTALL_ROOT/usr/bin/aish-sandbox"
+          test -f "$INSTALL_ROOT/etc/aish/security_policy.yaml"
+          test -f "$INSTALL_ROOT/lib/systemd/system/aish-sandbox.service"
+          test -f "$INSTALL_ROOT/lib/systemd/system/aish-sandbox.socket"
 
       - name: Upload dry-run artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: prerelease-bundle-${{ matrix.arch }}
+          name: prerelease-aish-linux-${{ matrix.arch }}
           path: artifacts/${{ matrix.arch }}/*
           if-no-files-found: error
