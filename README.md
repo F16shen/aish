@@ -73,16 +73,20 @@ Empower the Shell to think. Evolve Operations.
 
 ### 1) Install and Launch
 
-**Option 1: One-line install (Recommended)**
+#### Option 1: One-line install (Recommended)
 
 ```bash
 curl -fsSL https://www.aishell.ai/repo/install.sh | bash
 ```
 
-**Option 2: Install from .deb package**
+#### Option 2: Manual bundle install
+
+Download the matching `aish-<version>-linux-<arch>.tar.gz` bundle from the official release directory, then run:
 
 ```bash
-sudo dpkg -i aish_<version>_<arch>.deb
+tar -xzf aish-<version>-linux-<arch>.tar.gz
+cd aish-<version>-linux-<arch>
+sudo ./install.sh
 ```
 
 Then launch:
@@ -114,11 +118,13 @@ aish> ;explain this command: tar -czf a.tgz ./dir
 
 ## Installation
 
-### Debian/Ubuntu Distributions
+### Linux Release Bundle
 
 ```bash
-sudo dpkg -i aish_<version>_<arch>.deb
+curl -fsSL https://www.aishell.ai/repo/install.sh | bash
 ```
+
+The installer resolves the latest release directory under `https://www.aishell.ai/repo`, downloads the matching bundle for your architecture, and installs `aish`, `aish-sandbox`, and `aish-uninstall` into `/usr/local/bin`.
 
 ### Run from Source (Development/Trial)
 
@@ -136,13 +142,13 @@ python -m aish
 Uninstall (keep configuration files):
 
 ```bash
-sudo dpkg -r aish
+sudo aish-uninstall
 ```
 
 Complete uninstallation (also removes system-level security policies):
 
 ```bash
-sudo dpkg -P aish
+sudo aish-uninstall --purge-config
 ```
 
 Optional: Clean user-level configuration (will clear model/API keys etc.):

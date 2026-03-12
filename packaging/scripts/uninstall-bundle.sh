@@ -74,7 +74,7 @@ disable_services
 
 BIN_DIR="$(binary_target_dir)"
 
-rm -f "$(target_path "${BIN_DIR}/aish")" "$(target_path "${BIN_DIR}/aish-sandbox")"
+rm -f "$(target_path "${BIN_DIR}/aish")" "$(target_path "${BIN_DIR}/aish-sandbox")" "$(target_path "${BIN_DIR}/aish-uninstall")"
 
 if [[ -z "$INSTALL_PREFIX" ]]; then
 	rm -f "$(target_path "/etc/systemd/system/aish-sandbox.service")" "$(target_path "/etc/systemd/system/aish-sandbox.socket")"

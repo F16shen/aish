@@ -2,19 +2,23 @@
 
 ## 🚀 Installation
 
-### Method 1: Package Installation (Recommended)
+### Method 1: One-line Install (Recommended)
 
-**Debian/Ubuntu:**
 ```bash
-sudo dpkg -i aish_<version>_<arch>.deb
+curl -fsSL https://www.aishell.ai/repo/install.sh | bash
 ```
 
-**Or use the installation script:**
+### Method 2: Manual Bundle Install
+
+Download the matching `aish-<version>-linux-<arch>.tar.gz` bundle from the official release directory, then run:
+
 ```bash
-curl -fsSL https://github.com/AI-Shell-Team/aish/blob/main/install.sh | bash
+tar -xzf aish-<version>-linux-<arch>.tar.gz
+cd aish-<version>-linux-<arch>
+sudo ./install.sh
 ```
 
-### Method 2: Run from Source
+### Method 3: Run from Source
 
 ```bash
 cd /path/to/aish

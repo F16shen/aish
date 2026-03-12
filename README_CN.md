@@ -70,16 +70,20 @@
 
 ### 1) 安装并启动
 
-**方式一：一键安装（推荐）**
+#### 方式一：一键安装（推荐）
 
 ```bash
 curl -fsSL https://www.aishell.ai/repo/install.sh | bash
 ```
 
-**方式二：从 .deb 包安装**
+#### 方式二：手动安装二进制 bundle
+
+先从官方发布目录下载对应架构的 `aish-<version>-linux-<arch>.tar.gz`，然后执行：
 
 ```bash
-sudo dpkg -i aish_<version>_<arch>.deb
+tar -xzf aish-<version>-linux-<arch>.tar.gz
+cd aish-<version>-linux-<arch>
+sudo ./install.sh
 ```
 
 然后启动：
@@ -111,11 +115,13 @@ aish> ;解释一下这个命令：tar -czf a.tgz ./dir
 
 ## 安装
 
-### Debian/Ubuntu 等 发行版
+### Linux 二进制 Bundle
 
 ```bash
-sudo dpkg -i aish_<version>_<arch>.deb
+curl -fsSL https://www.aishell.ai/repo/install.sh | bash
 ```
+
+该安装器会在 `https://www.aishell.ai/repo` 下解析最新发布目录，下载与你当前架构匹配的 bundle，并把 `aish`、`aish-sandbox` 和 `aish-uninstall` 安装到 `/usr/local/bin`。
 
 ### 从源码运行（开发/试用）
 
@@ -133,13 +139,13 @@ python -m aish
 卸载（保留配置文件）：
 
 ```bash
-sudo dpkg -r aish
+sudo aish-uninstall
 ```
 
 彻底卸载（同时删除系统级安全策略）：
 
 ```bash
-sudo dpkg -P aish
+sudo aish-uninstall --purge-config
 ```
 
 可选：清理用户级配置（会清空模型/API Key 等）：

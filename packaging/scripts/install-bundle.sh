@@ -196,6 +196,7 @@ BIN_DIR="$(binary_target_dir)"
 
 install_file "$ROOTFS_DIR/usr/bin/aish" "${BIN_DIR}/aish" 0755
 install_file "$ROOTFS_DIR/usr/bin/aish-sandbox" "${BIN_DIR}/aish-sandbox" 0755
+install_file "$SCRIPT_DIR/uninstall.sh" "${BIN_DIR}/aish-uninstall" 0755
 install_config "$ROOTFS_DIR/etc/aish/security_policy.yaml" "/etc/aish/security_policy.yaml"
 if [[ -z "$INSTALL_PREFIX" ]]; then
 	install_systemd_unit "$ROOTFS_DIR/lib/systemd/system/aish-sandbox.service" "/etc/systemd/system/aish-sandbox.service"
