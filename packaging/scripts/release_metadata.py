@@ -40,22 +40,34 @@ def _load_runtime_version() -> str:
     raise ValueError(f"Could not find __version__ in {RUNTIME_VERSION_PATH}")
 
 
-def _extract_unreleased_notes() -> str:
+def _extract_changelog_section(section_name: str) -> str:
     lines = CHANGELOG_PATH.read_text(encoding="utf-8").splitlines()
-    in_unreleased = False
+    target_heading = f"## [{section_name}]"
+    in_section = False
     collected: list[str] = []
 
     for line in lines:
-        if line.startswith("## [Unreleased]"):
-            in_unreleased = True
+        if line.startswith(target_heading):
+            in_section = True
             continue
-        if in_unreleased and line.startswith("## ["):
+        if in_section and line.startswith("## ["):
             break
-        if in_unreleased:
+        if in_section:
             collected.append(line)
 
+    if not in_section:
+        raise ValueError(f"Could not find changelog section {target_heading} in {CHANGELOG_PATH}")
+
     notes = "\n".join(collected).strip()
-    return notes or "No unreleased notes were found in CHANGELOG.md."
+    if not notes:
+        raise ValueError(f"Changelog section {target_heading} is empty in {CHANGELOG_PATH}")
+    return notes
+
+
+def _extract_release_notes(version: str | None) -> str:
+    if version:
+        return _extract_changelog_section(version)
+    return _extract_changelog_section("Unreleased")
 
 
 def _normalize_version(raw_version: str) -> str:
@@ -65,7 +77,7 @@ def _normalize_version(raw_version: str) -> str:
     return version
 
 
-def _get_previous_stable_tag() -> str:
+def _get_previous_stable_tag(excluded_tag: str | None = None) -> str:
     try:
         output = subprocess.check_output(
             ["git", "tag", "-l", "v*"],
@@ -77,6 +89,8 @@ def _get_previous_stable_tag() -> str:
 
     tags = [tag.strip() for tag in output.splitlines() if tag.strip()]
     stable_tags = [tag for tag in tags if re.fullmatch(r"v\d+\.\d+\.\d+", tag)]
+    if excluded_tag:
+        stable_tags = [tag for tag in stable_tags if tag != excluded_tag]
     if not stable_tags:
         return ""
     return sorted(stable_tags, key=lambda value: tuple(int(part) for part in value[1:].split(".")))[-1]
@@ -93,7 +107,7 @@ def _write_github_output(path: Path, metadata: dict[str, str]) -> None:
 
 def _write_summary(path: Path, metadata: dict[str, str]) -> None:
     summary = [
-        "# Release Preparation Summary",
+        "# Release Metadata Summary",
         "",
         f"- Version: {metadata['version']}",
         f"- Tag: {metadata['tag']}",
@@ -104,7 +118,7 @@ def _write_summary(path: Path, metadata: dict[str, str]) -> None:
     if metadata["previous_stable_tag"]:
         summary.append(f"- Previous stable tag: {metadata['previous_stable_tag']}")
 
-    summary.extend(["", "## Unreleased Notes", "", metadata["release_notes"], ""])
+    summary.extend(["", "## Release Notes", "", metadata["release_notes"], ""])
     path.write_text("\n".join(summary), encoding="utf-8")
 
 
@@ -146,8 +160,8 @@ def main() -> int:
         "tag": f"v{version}",
         "pyproject_version": pyproject_version,
         "runtime_version": runtime_version,
-        "previous_stable_tag": _get_previous_stable_tag(),
-        "release_notes": _extract_unreleased_notes(),
+        "previous_stable_tag": _get_previous_stable_tag(excluded_tag=f"v{version}"),
+        "release_notes": _extract_release_notes(version if args.expected_version else None),
     }
 
     if args.github_output:
