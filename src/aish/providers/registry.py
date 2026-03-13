@@ -71,9 +71,14 @@ DEFAULT_PROVIDER = LiteLLMProviderAdapter()
 
 
 def _registered_providers() -> tuple[ProviderContract, ...]:
+    from .github_copilot import GITHUB_COPILOT_PROVIDER_ADAPTER
     from .openai_codex import OPENAI_CODEX_PROVIDER_ADAPTER
 
-    return (OPENAI_CODEX_PROVIDER_ADAPTER, DEFAULT_PROVIDER)
+    return (
+        OPENAI_CODEX_PROVIDER_ADAPTER,
+        GITHUB_COPILOT_PROVIDER_ADAPTER,
+        DEFAULT_PROVIDER,
+    )
 
 
 def get_provider_for_model(model: str | None) -> ProviderContract:

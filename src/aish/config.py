@@ -178,6 +178,13 @@ class ConfigModel(BaseModel):
             "$CODEX_HOME/auth.json, or ~/.codex/auth.json"
         ),
     )
+    github_copilot_auth_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to GitHub Copilot auth.json. Defaults to "
+            "$AISH_GITHUB_COPILOT_AUTH_PATH or XDG data dir/aish/github-copilot-auth.json"
+        ),
+    )
     temperature: float = Field(
         default=0.7, ge=0.0, le=2.0, description="Temperature for LLM responses"
     )

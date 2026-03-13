@@ -5,7 +5,9 @@ import pytest
 from aish.config import ConfigModel
 from aish.context_manager import ContextManager
 from aish.llm import LLMSession
+from aish.providers.github_copilot import GITHUB_COPILOT_PROVIDER_ADAPTER
 from aish.providers.interface import ProviderAuthConfig
+from aish.providers.registry import get_provider_for_model
 from aish.skills import SkillManager
 
 
@@ -73,3 +75,9 @@ async def test_llm_routes_completion_through_provider_registry():
     assert result == "hello from provider"
     provider.create_completion_mock.assert_awaited_once()
     assert provider.create_completion_mock.await_args.kwargs["model"] == "fake-provider/model-x"
+
+
+def test_registry_routes_github_copilot_models_to_provider():
+    provider = get_provider_for_model("github-copilot/gpt-4o")
+
+    assert provider is GITHUB_COPILOT_PROVIDER_ADAPTER

@@ -12,6 +12,7 @@ import pytest
 
 from aish.config import ConfigModel
 from aish.context_manager import MemoryType
+from aish.providers.github_copilot import GITHUB_COPILOT_PROVIDER_ADAPTER
 from aish.providers.openai_codex import OPENAI_CODEX_PROVIDER_ADAPTER
 from aish.security.security_manager import SecurityDecision
 from aish.security.security_policy import RiskLevel
@@ -187,6 +188,36 @@ class TestAIShell:
             config=shell.config,
         )
         assert shell.llm_session.model == "custom-provider/model-x"
+
+    @pytest.mark.asyncio
+    async def test_model_command_switches_to_github_copilot_without_verification(self):
+        config = ConfigModel(
+            model="test-model",
+            api_key="test-key",
+            github_copilot_auth_path="/tmp/github-copilot-auth.json",
+        )
+        shell = make_shell(config)
+
+        with (
+            patch(
+                "aish.shell.get_provider_for_model",
+                return_value=GITHUB_COPILOT_PROVIDER_ADAPTER,
+            ),
+            patch(
+                "aish.providers.github_copilot.load_github_copilot_auth",
+                return_value=Mock(),
+            ),
+            patch(
+                "aish.wizard.verification.run_verification_async",
+                new_callable=AsyncMock,
+            ) as mock_verify,
+        ):
+            await shell.handle_model_command("/model github-copilot/gpt-4o")
+
+        assert shell.llm_session.model == "github-copilot/gpt-4o"
+        assert shell.context_manager.model == "github-copilot/gpt-4o"
+        assert shell.config.model == "github-copilot/gpt-4o"
+        mock_verify.assert_not_called()
 
     def test_init_creates_session_record(self, tmp_path):
         """Each shell start should create a new persisted session record."""

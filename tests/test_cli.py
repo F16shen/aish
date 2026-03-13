@@ -10,6 +10,7 @@ from aish.cli import app, run
 from aish.config import ConfigModel
 from aish.i18n import t
 from aish.providers.interface import ProviderAuthConfig
+from aish.providers.github_copilot import GitHubCopilotAuthError
 from aish.providers.openai_codex import OpenAICodexAuthError
 
 
@@ -340,14 +341,45 @@ class TestCLI:
         assert result.exit_code == 0
         mock_login_device_code.assert_called_once()
 
-    def test_models_auth_login_rejects_unknown_provider(self):
+    @patch("aish.cli.Config")
+    @patch("aish.providers.github_copilot.login_github_copilot_with_browser")
+    @patch("aish.providers.github_copilot.load_github_copilot_auth")
+    def test_models_auth_login_sets_default_github_copilot_model(
+        self,
+        mock_load_github_copilot_auth,
+        mock_login_github_copilot,
+        mock_config_class,
+    ):
+        mock_config = Mock()
+        mock_config.model_config = ConfigModel(model="openai/gpt-4o", api_key="k")
+        mock_config_class.return_value = mock_config
+        mock_load_github_copilot_auth.side_effect = GitHubCopilotAuthError("missing")
+        mock_login_github_copilot.return_value = Mock(
+            auth_path=Path("/tmp/github-copilot-auth.json")
+        )
+
         result = self.runner.invoke(
             app,
             ["models", "auth", "login", "--provider", "github-copilot"],
         )
 
+        assert result.exit_code == 0
+        assert mock_config.config_model.model == "github-copilot/gpt-4o"
+        assert mock_config.config_model.api_key is None
+        assert (
+            mock_config.config_model.github_copilot_auth_path
+            == "/tmp/github-copilot-auth.json"
+        )
+        mock_login_github_copilot.assert_called_once()
+
+    def test_models_auth_login_rejects_unknown_provider(self):
+        result = self.runner.invoke(
+            app,
+            ["models", "auth", "login", "--provider", "unknown-provider"],
+        )
+
         assert result.exit_code == 1
-        assert "Unsupported provider `github-copilot`" in result.output
+        assert "Unsupported provider `unknown-provider`" in result.output
 
     @patch("aish.cli.Config")
     @patch("aish.cli.get_provider_by_id")

@@ -88,6 +88,10 @@ def get_effective_config(
     if codex_auth_path_env:
         config_data["codex_auth_path"] = codex_auth_path_env
 
+    github_copilot_auth_path_env = os.getenv("AISH_GITHUB_COPILOT_AUTH_PATH")
+    if github_copilot_auth_path_env:
+        config_data["github_copilot_auth_path"] = github_copilot_auth_path_env
+
     # Override with command line arguments (highest priority)
     if model is not None:
         config_data["model"] = model
