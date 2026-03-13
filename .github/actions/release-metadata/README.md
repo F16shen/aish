@@ -6,7 +6,7 @@ It performs four tasks:
 
 - normalizes the requested version or tag into a stable `X.Y.Z` version
 - validates that `pyproject.toml` and `src/aish/__init__.py` carry the same version
-- extracts the `Unreleased` section from `CHANGELOG.md`
+- extracts the target release section from `CHANGELOG.md` when a version is provided
 - uploads both a markdown summary and a JSON metadata artifact for downstream review
 
 ## Inputs
@@ -21,7 +21,7 @@ It performs four tasks:
 - `pyproject_version`: version read from `pyproject.toml`
 - `runtime_version`: version read from `src/aish/__init__.py`
 - `previous_stable_tag`: most recent stable tag found in git, if any
-- `release_notes`: extracted `CHANGELOG.md` unreleased notes
+- `release_notes`: extracted `CHANGELOG.md` notes for the target release section
 
 ## Uploaded Artifacts
 

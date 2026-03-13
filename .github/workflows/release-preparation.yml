@@ -55,7 +55,7 @@ jobs:
           - Tag: ${{ needs.release-meta.outputs.tag }}
           - Previous stable tag: ${{ needs.release-meta.outputs.previous_stable_tag || 'none' }}
 
-          ## Unreleased Notes
+          ## Release Notes
 
           ${{ needs.release-meta.outputs.release_notes }}
           EOF

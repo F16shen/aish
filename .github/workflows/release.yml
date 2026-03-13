@@ -1,9 +1,9 @@
 name: Release
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -26,11 +26,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag commit is on main
+        run: |
+          git fetch origin main --depth=1
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
       - name: Compute release metadata
         id: metadata
         uses: ./.github/actions/release-metadata
         with:
-          version: ${{ github.event.release.tag_name }}
+          version: ${{ github.ref_name }}
           artifact_prefix: release
 
   release-gate:
@@ -45,11 +50,26 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.release-meta.outputs.tag }}
 
+  create-release:
+    name: Create GitHub release
+    needs:
+      - release-meta
+      - release-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release entry with generated notes
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-meta.outputs.tag }}
+          name: aish ${{ needs.release-meta.outputs.tag }}
+          generate_release_notes: true
+
   build-release-packages:
     name: Build release bundle (${{ matrix.arch }})
     needs:
       - release-meta
       - release-gate
+      - create-release
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +123,7 @@ jobs:
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.release-meta.outputs.tag }}
           files: artifacts/${{ matrix.arch }}/*
 
   release-summary:
@@ -120,5 +141,5 @@ jobs:
           - Version: ${{ needs.release-meta.outputs.version }}
           - Tag: ${{ needs.release-meta.outputs.tag }}
 
-          Release metadata artifacts and bundle assets were uploaded successfully.
+          GitHub Release metadata was generated from the tag push, and bundle assets were uploaded successfully.
           EOF

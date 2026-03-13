@@ -38,13 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added built-in OpenAI Codex OAuth support.
-- Added a manual Release PR workflow to prepare version bumps and release notes before publication.
 - Added a unified Release Preparation workflow that validates the target version and dry-runs release bundles before the final release.
+- Added tag-driven GitHub Release publishing for stable `vX.Y.Z` pushes.
 
 ### Changed
 
-- Changed the release pipeline to publish Linux binary bundles for amd64 and arm64, with install and smoke-test verification in CI.
-- Changed release metadata handling so version normalization, changelog extraction, and previous-tag discovery are generated consistently for release workflows.
+- Changed the release pipeline to publish Linux binary bundles for amd64 and arm64 from stable git tags, with install and smoke-test verification in CI.
+- Changed release metadata handling so version normalization, versioned changelog extraction, and previous-tag discovery are generated consistently for release workflows.
 
 ### Removed
 
