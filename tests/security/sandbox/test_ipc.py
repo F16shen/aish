@@ -118,7 +118,7 @@ def test_sandbox_ipc_protocol_error_on_invalid_json(tmp_path: Path):
 
 def test_security_manager_uses_ipc_when_enabled(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("aish.security.security_manager.os.geteuid", lambda: 0)
-    policy = SecurityPolicy(enable_sandbox=True, rules=[])
+    policy = SecurityPolicy(enable_sandbox=True, rules=[], sandbox_timeout_seconds=10.0)
 
     manager = SimpleSecurityManager(
         repo_root=tmp_path,
@@ -127,6 +127,7 @@ def test_security_manager_uses_ipc_when_enabled(monkeypatch, tmp_path: Path):
     )
 
     assert isinstance(manager._sandbox_security, SandboxSecurityIpc)
+    assert manager._sandbox_security._client._timeout_s == 10.0
 
 
 def test_security_manager_uses_fallback_when_ipc_is_unavailable(tmp_path: Path):

@@ -31,6 +31,21 @@ def test_load_security_policy_parses_sandbox_off_action(tmp_path: Path):
     assert policy.sandbox_off_action == SandboxOffAction.BLOCK
 
 
+def test_load_security_policy_parses_sandbox_timeout_seconds(tmp_path: Path):
+    policy_path = tmp_path / "security_policy.yaml"
+    policy_path.write_text(
+        "global:\n"
+        "  enable_sandbox: true\n"
+        "  sandbox_timeout_seconds: 10\n"
+        "rules: []\n",
+        encoding="utf-8",
+    )
+
+    policy = load_security_policy(config_path=policy_path)
+    assert policy.enable_sandbox is True
+    assert policy.sandbox_timeout_seconds == 10.0
+
+
 def test_sandbox_fallback_high_blocks_ai_command():
     policy = SecurityPolicy(
         enable_sandbox=False,

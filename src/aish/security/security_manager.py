@@ -75,6 +75,7 @@ class SimpleSecurityManager:
                 repo_root=self._repo_root,
                 enabled=True,
                 socket_path=socket_path,
+                timeout_s=self._policy.sandbox_timeout_seconds,
             )
 
         self._ai_engine = AiRiskEngine(self._policy)
