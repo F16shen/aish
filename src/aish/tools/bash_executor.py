@@ -58,7 +58,7 @@ class UnifiedBashExecutor:
         self,
         command: str,
         source: str = "ai",
-        timeout: int = 30,
+        timeout: Optional[int] = None,
         use_pty: bool = False,
         cancel_event: Optional[Any] = None,
     ) -> Tuple[bool, str, str, int, Dict]:
@@ -68,7 +68,7 @@ class UnifiedBashExecutor:
         Args:
             command: Shell command to execute
             source: Command source ("ai" or "user")
-            timeout: Timeout in seconds
+            timeout: Optional timeout in seconds; None disables timeout
             use_pty: Whether to use PTY (for interactive commands)
             cancel_event: Cancellation event (PTY mode only)
 
@@ -122,21 +122,26 @@ class UnifiedBashExecutor:
         state_file: str,
         cwd: str,
         env_vars: Dict[str, str],
-        timeout: int,
+        timeout: Optional[int],
     ) -> Tuple[bool, str, str, int]:
         """Normal execution using subprocess.run."""
         wrapped_command = wrap_command_with_state_capture(command, state_file)
 
         try:
+            run_kwargs: Dict[str, Any] = {
+                "args": wrapped_command,
+                "shell": True,
+                "executable": "/bin/bash",
+                "capture_output": True,
+                "text": False,
+                "cwd": cwd,
+                "env": env_vars,
+            }
+            if timeout is not None:
+                run_kwargs["timeout"] = timeout
+
             result = subprocess.run(
-                wrapped_command,
-                shell=True,
-                executable="/bin/bash",
-                capture_output=True,
-                text=False,
-                timeout=timeout,
-                cwd=cwd,
-                env=env_vars,
+                **run_kwargs,
             )
 
             stdout = (result.stdout or b"").decode("utf-8", errors="replace")

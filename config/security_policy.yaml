@@ -6,6 +6,8 @@
 #   - enable_sandbox: 是否启用沙箱预跑/受控执行（如实现侧支持，可映射到对应开关）。
 #   - sandbox_off_action: 当沙箱关闭、不可用或执行失败时，系统无法根据 rules 评估命令实际的文件变更，
 #     将采用该配置指定的动作进行处理：BLOCK=阻断，CONFIRM=需确认，ALLOW=直接放行。
+#   - sandbox_timeout_seconds: 沙箱预执行/预评估的超时时间（秒）。超时后不会阻止真实命令，
+#     但会降级为“无法可靠评估风险，请确认后执行”。
 #
 # - rules: 规则列表（自上而下匹配，命中第一条即生效）
 #   每条规则字段：
@@ -42,6 +44,9 @@ global:
 
   # 沙箱关闭、不可用或执行失败时的处理动作（BLOCK=阻断，CONFIRM=需确认，ALLOW=直接放行）
   sandbox_off_action: ALLOW
+
+  # 沙箱预执行超时时间（秒）
+  sandbox_timeout_seconds: 10
 
 # 规则列表：从上到下匹配，第一条命中生效
 rules:

@@ -1,6 +1,7 @@
 """测试统一 Bash 执行器"""
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -121,6 +122,28 @@ class TestUnifiedBashExecutor:
         assert success is True
         assert "Error: 'utf-8' codec can't decode" not in stderr
         assert stdout != ""
+
+    def test_default_execute_does_not_pass_timeout(self, executor, monkeypatch):
+        """测试默认执行不向 subprocess 传递 timeout"""
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=kwargs.get("args") or args[0],
+                returncode=0,
+                stdout=b"ok\n",
+                stderr=b"",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        success, stdout, stderr, retcode, changes = executor.execute("echo ok")
+
+        assert success is True
+        assert retcode == 0
+        assert stdout == "ok\n"
+        assert "timeout" not in captured
 
 
 if __name__ == "__main__":

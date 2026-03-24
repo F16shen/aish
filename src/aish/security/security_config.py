@@ -37,6 +37,8 @@ _EMPTY_POLICY_TEMPLATE_ZH = """# -AI-Shell Security Policy
 #   - enable_sandbox: 是否启用沙箱预跑/受控执行（如实现侧支持，可映射到对应开关）。
 #   - sandbox_off_action: 当沙箱关闭/不可用/执行失败时，无法根据 rules 评估命令的实际文件变更，
 #     将使用该动作作为兜底决策：BLOCK=阻断，CONFIRM=确认，ALLOW=直接放行。
+#   - sandbox_timeout_seconds: 沙箱预执行/预评估的超时时间（秒）。超时后不会阻止真实命令，
+#     但会降级为“无法可靠评估风险，请确认后执行”。
 #
 # - rules: 规则列表（自上而下匹配，命中第一条即生效）
 #   每条规则字段：
@@ -73,6 +75,9 @@ global:
 
     # 沙箱关闭/失败时的兜底动作（BLOCK=阻断，CONFIRM=确认，ALLOW=直接放行）
     sandbox_off_action: ALLOW
+
+    # 沙箱预执行超时时间（秒）
+    sandbox_timeout_seconds: 10
 
 # 规则列表：从上到下匹配，第一条命中生效
 rules:
@@ -114,6 +119,8 @@ _EMPTY_POLICY_TEMPLATE_EN = """# -AI-Shell Security Policy
 #   - enable_sandbox: enable sandbox pre-run/controlled execution (if supported by the implementation).
 #   - sandbox_off_action: when sandbox is disabled/unavailable/failed, rules cannot be evaluated (no file change list).
 #     This action is used as a fallback decision: BLOCK, CONFIRM, ALLOW.
+#   - sandbox_timeout_seconds: timeout in seconds for sandbox pre-execution/pre-evaluation.
+#     On timeout, the real command is not blocked, but risk evaluation degrades to confirmation fallback.
 #
 # - rules: rule list (top-down match; first match wins)
 #   Fields:
@@ -150,6 +157,9 @@ global:
 
     # Fallback action when sandbox is unavailable (BLOCK, CONFIRM, ALLOW)
     sandbox_off_action: ALLOW
+
+    # Sandbox pre-execution timeout in seconds
+    sandbox_timeout_seconds: 10
 
 # Rules: top-down match, first match wins
 rules:
@@ -446,6 +456,24 @@ def load_security_policy(config_path: Optional[Path] = None) -> SecurityPolicy:
                 "security_policy: invalid sandbox_off_action; falling back to ALLOW"
             )
 
+    raw_sandbox_timeout = (
+        global_cfg.get("sandbox_timeout_seconds")
+        if isinstance(global_cfg, dict)
+        else None
+    )
+    if raw_sandbox_timeout is None:
+        sandbox_timeout_seconds = 10.0
+    else:
+        try:
+            sandbox_timeout_seconds = float(raw_sandbox_timeout)
+            if sandbox_timeout_seconds <= 0:
+                raise ValueError("sandbox_timeout_seconds must be > 0")
+        except Exception:
+            sandbox_timeout_seconds = 10.0
+            _LOGGER.warning(
+                "security_policy: invalid sandbox_timeout_seconds; falling back to 10.0"
+            )
+
     # Backward compatibility: support the old key sandbox_fallback_risk (LOW/MEDIUM/HIGH)
     # and map it to sandbox_off_action (ALLOW/CONFIRM/BLOCK).
     if (
@@ -501,6 +529,7 @@ def load_security_policy(config_path: Optional[Path] = None) -> SecurityPolicy:
         enable_sandbox=enable_sandbox,
         rules=rules,
         sandbox_off_action=sandbox_off_action,
+        sandbox_timeout_seconds=sandbox_timeout_seconds,
         default_risk_level=default_risk,
         audit_enabled=audit_cfg.enabled,
         audit_log_path=audit_cfg.log_path,

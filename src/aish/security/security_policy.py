@@ -83,6 +83,7 @@ class SecurityPolicy:
     # 此时将依据 sandbox_off_action 配置决定执行阻断、确认还是直接放行。
     # 默认为放行
     sandbox_off_action: SandboxOffAction = SandboxOffAction.ALLOW
+    sandbox_timeout_seconds: float = 10.0
 
     default_risk_level: RiskLevel = RiskLevel.LOW
     audit_enabled: bool = False
@@ -95,6 +96,7 @@ class SecurityPolicy:
         return SecurityPolicy(
             enable_sandbox=False,
             rules=list(_DEFAULT_RULES),
+            sandbox_timeout_seconds=10.0,
             invalid_fallback_rules=[],
             validation_issues=[],
         )
