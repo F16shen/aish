@@ -333,7 +333,6 @@ class LLMSession:
         self.skill_manager = skill_manager
         self.prompt_manager = PromptManager()
         self._skills_version_for_tools = self.skill_manager.skills_version
-        self._skills_version_for_reminder: Optional[int] = None
 
         # Event callback for new event-driven architecture
         self.event_callback = event_callback
@@ -1063,6 +1062,13 @@ class LLMSession:
         self._skills_version_for_tools = current_version
         self._tools_spec = None
 
+    def _reload_skills_at_safe_point(self) -> None:
+        try:
+            self.skill_manager.reload_if_dirty()
+        except Exception:
+            pass
+        self._sync_skill_tool_from_manager_if_needed()
+
     def _build_skills_reminder_message(self) -> Optional[dict]:
         """Build a skills reminder message from current loaded skills snapshot."""
         try:
@@ -1078,56 +1084,51 @@ class LLMSession:
             ),
         }
 
-    def _append_skills_reminder_if_needed(
-        self, context_manager: ContextManager
-    ) -> None:
-        """Append skills reminder on first turn and whenever skill snapshot changes."""
-        try:
-            self.skill_manager.reload_if_dirty()
-        except Exception:
-            pass
-        self._sync_skill_tool_from_manager_if_needed()
-        current_version = self.skill_manager.skills_version
-        if self._skills_version_for_reminder == current_version:
-            return
+    def _inject_runtime_messages(
+        self, messages: list[dict], runtime_messages: list[dict]
+    ) -> list[dict]:
+        if not runtime_messages:
+            return messages
 
-        reminder = self._build_skills_reminder_message()
-        if reminder is None:
-            return
+        insertion_index = 0
+        while (
+            insertion_index < len(messages)
+            and messages[insertion_index].get("role") == "system"
+        ):
+            insertion_index += 1
 
-        context_manager.add_memory(MemoryType.LLM, reminder)
-        self._skills_version_for_reminder = current_version
+        return (
+            messages[:insertion_index]
+            + runtime_messages
+            + messages[insertion_index:]
+        )
 
     def _get_tools_spec(self) -> list[dict]:
         # Lazy reload: file changes only invalidate; next tool-spec build reloads.
-        try:
-            self.skill_manager.reload_if_dirty()
-        except Exception:
-            pass
-        self._sync_skill_tool_from_manager_if_needed()
+        self._reload_skills_at_safe_point()
         if self._tools_spec is None:
             self._tools_spec = [t.to_func_spec() for t in self.tools.values()]
         return self._tools_spec
 
     # TODO: refresh tools spec when skills are updated, reserved for future use
     def refresh_tools_spec(self) -> list[dict]:
-        try:
-            self.skill_manager.reload_if_dirty()
-        except Exception:
-            pass
-        self._sync_skill_tool_from_manager_if_needed()
+        self._reload_skills_at_safe_point()
         self._tools_spec = [t.to_func_spec() for t in self.tools.values()]
         return self._tools_spec
 
     def _get_messages_with_system(
         self, context_manager: ContextManager, system_message: Optional[str]
     ) -> list[dict]:
+        self._reload_skills_at_safe_point()
         messages = context_manager.as_messages()
         if system_message:
             if messages and messages[0]["role"] == "system":
                 messages[0]["content"] = system_message
             else:
                 messages.insert(0, {"role": "system", "content": system_message})
+        reminder = self._build_skills_reminder_message()
+        if reminder is not None:
+            messages = self._inject_runtime_messages(messages, [reminder])
         return messages
 
     async def _handle_tool_calls(
@@ -1217,8 +1218,6 @@ class LLMSession:
 
         events = _LLMEventEmitter(self, emit_events)
         events.emit_op_start(operation="process_input", prompt=prompt, stream=stream)
-
-        self._append_skills_reminder_if_needed(context_manager)
 
         # Add user prompt to context manager first
         context_manager.add_memory(MemoryType.LLM, {"role": "user", "content": prompt})

@@ -1,15 +1,17 @@
 import shutil
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import anyio
 import pytest
 
 from aish.config import ConfigModel
-from aish.context_manager import ContextManager
+from aish.context_manager import ContextManager, MemoryType
 from aish.llm import LLMSession
 from aish.skills import SkillManager
 from aish.skills.hotreload import SkillHotReloadService
+from aish.tools.skill import SkillTool
 
 
 def _write_skill(path: Path, *, name: str, description: str) -> None:
@@ -54,6 +56,20 @@ def _extract_skills_reminders(messages: list[dict]) -> list[tuple[int, str]]:
     if not results:
         raise AssertionError("skills reminder message not found")
     return results
+
+
+def _persisted_skills_reminders(context_manager: ContextManager) -> list[str]:
+    reminders: list[str] = []
+    for memory in context_manager.memories:
+        if memory.get("memory_type") != MemoryType.LLM:
+            continue
+        content = memory.get("content")
+        if not isinstance(content, dict):
+            continue
+        body = content.get("content")
+        if isinstance(body, str) and "<system-reminder>" in body:
+            reminders.append(body)
+    return reminders
 
 
 def test_skill_manager_invalidate_then_reload(tmp_path, monkeypatch):
@@ -188,12 +204,12 @@ async def test_process_input_injects_skills_reminder_with_latest_metadata(
 
     second_messages = await run_once("question-v2", "sys-v2")
     second_reminders = _extract_skills_reminders(second_messages)
-    assert len(second_reminders) == 2
-    older_reminder = second_reminders[0][1]
+    assert len(second_reminders) == 1
     latest_reminder = second_reminders[-1][1]
-    assert "- my-skill: v1" in older_reminder
+    assert "Current skills count: 1" in latest_reminder
     assert "- my-skill: v2" in latest_reminder
     assert "- my-skill: v1" not in latest_reminder
+    assert _persisted_skills_reminders(context_manager) == []
 
 
 @pytest.mark.anyio
@@ -338,12 +354,12 @@ async def test_process_input_skills_reminder_reflects_deleted_skill(
 
     await run_once("question-2", "sys-2")
     reminders_after_delete = _extract_skills_reminders(captured_messages[-1])
-    assert len(reminders_after_delete) == 2
-    older_reminder = reminders_after_delete[0][1]
+    assert len(reminders_after_delete) == 1
     latest_reminder = reminders_after_delete[-1][1]
-    assert "- skill-2: two" in older_reminder
+    assert "Current skills count: 1" in latest_reminder
     assert "- skill-1: one" in latest_reminder
     assert "- skill-2: two" not in latest_reminder
+    assert _persisted_skills_reminders(context_manager) == []
 
 
 @pytest.mark.anyio
@@ -467,7 +483,7 @@ def test_skill_tool_runtime_validation_tracks_deleted_skill(tmp_path, monkeypatc
 
     # Prime sync once.
     session._get_tools_spec()
-    tool = session.tools["skill"]
+    tool = cast(SkillTool, session.tools["skill"])
     ok_result = tool(skill_name="skill-2")
     assert ok_result.ok is True
 
