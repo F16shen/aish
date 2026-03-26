@@ -162,7 +162,11 @@ class ContextManager:
 
     def _trim_to_token_budget(self):
         """Trim memories to fit within token budget."""
-        while self.estimate_tokens() > self.token_budget and len(self.memories) > 0:
+        while (
+            self.token_budget is not None
+            and self.estimate_tokens() > self.token_budget
+            and len(self.memories) > 0
+        ):
             # Find oldest non-system memory
             removed = False
             for i, memory in enumerate(self.memories):

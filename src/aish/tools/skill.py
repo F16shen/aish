@@ -49,6 +49,7 @@ def render_skills_reminder_text(skills: list[SkillMetadataInfo]) -> str:
     skills_list = render_skills_list_for_reminder(skills)
     return (
         "The following skills are available for use with the Skill tool:\n"
+        f"Current skills count: {len(skills)}\n\n"
         f"{skills_list}"
     )
 
