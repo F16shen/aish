@@ -17,9 +17,12 @@ def test_security_panel_shows_fallback_hint_for_sandbox_execute_failed(monkeypat
     monkeypatch.setenv("LANG", "zh_CN.UTF-8")
     _reset_i18n_cache()
 
-    from aish.shell import AIShell
+    from aish.shell_enhanced.shell_prompt_io import display_security_panel
 
-    shell = AIShell.__new__(AIShell)
+    class _Shell:
+        pass
+
+    shell = _Shell()
     shell.console = Console(record=True, width=120)
 
     data = {
@@ -33,7 +36,7 @@ def test_security_panel_shows_fallback_hint_for_sandbox_execute_failed(monkeypat
         },
     }
 
-    shell._display_security_panel(data, panel_mode="confirm")
+    display_security_panel(shell, data, panel_mode="confirm")
     text = shell.console.export_text()
 
     assert "无法检测命令风险" in text
@@ -44,9 +47,12 @@ def test_security_panel_hides_fallback_hint_in_command_fallback_mode(monkeypatch
     monkeypatch.setenv("LANG", "zh_CN.UTF-8")
     _reset_i18n_cache()
 
-    from aish.shell import AIShell
+    from aish.shell_enhanced.shell_prompt_io import display_security_panel
 
-    shell = AIShell.__new__(AIShell)
+    class _Shell:
+        pass
+
+    shell = _Shell()
     shell.console = Console(record=True, width=120)
 
     data = {
@@ -61,7 +67,7 @@ def test_security_panel_hides_fallback_hint_in_command_fallback_mode(monkeypatch
         },
     }
 
-    shell._display_security_panel(data, panel_mode="confirm")
+    display_security_panel(shell, data, panel_mode="confirm")
     text = shell.console.export_text()
 
     assert "无法检测命令风险" not in text
