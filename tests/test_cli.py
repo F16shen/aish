@@ -52,74 +52,51 @@ class TestCLI:
         assert "Features:" in result.output
         assert "Supported Models:" in result.output
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
-    def test_run_command_default(self, mock_anyio_run, mock_shell_class):
+    @patch("aish.shell_pty.run_shell")
+    def test_run_command_default(self, mock_run_shell):
         """Test run command with default parameters"""
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
-
         with patch("aish.cli.needs_interactive_setup", return_value=False):
             result = self.runner.invoke(app, ["run"])
 
         assert result.exit_code == 0
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
-    def test_default_invokes_run(self, mock_anyio_run, mock_shell_class):
+    @patch("aish.shell_pty.run_shell")
+    def test_default_invokes_run(self, mock_run_shell):
         """Running `aish` with no args should default to `run`."""
-
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
 
         with patch("aish.cli.needs_interactive_setup", return_value=False):
             result = self.runner.invoke(app, [])
 
         assert result.exit_code == 0
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
-    def test_run_command_custom_model(self, mock_anyio_run, mock_shell_class):
+    @patch("aish.shell_pty.run_shell")
+    def test_run_command_custom_model(self, mock_run_shell):
         """Test run command with custom model"""
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
-
         with patch("aish.cli.needs_interactive_setup", return_value=False):
             result = self.runner.invoke(app, ["run", "--model", "gpt-4"])
 
         assert result.exit_code == 0
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
+    @patch("aish.shell_pty.run_shell")
     @patch("aish.cli.os.environ", {})
-    def test_run_command_with_api_key(self, mock_anyio_run, mock_shell_class):
+    def test_run_command_with_api_key(self, mock_run_shell):
         """Test run command with API key"""
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
-
         result = self.runner.invoke(
             app, ["run", "--model", "gpt-4", "--api-key", "test-key"]
         )
 
         assert result.exit_code == 0
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
+    @patch("aish.shell_pty.run_shell")
     @patch("aish.cli.os.getenv")
     def test_run_command_no_api_key_minimal_output(
-        self, mock_getenv, mock_anyio_run, mock_shell_class
+        self, mock_getenv, mock_run_shell
     ):
         """Run command keeps startup output minimal when API key is absent."""
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
         mock_getenv.return_value = None  # No API key set
 
         with patch("aish.cli.needs_interactive_setup", return_value=False):
@@ -127,35 +104,26 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert t("cli.startup.no_api_key_warning") not in result.output
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
-    def test_run_command_keyboard_interrupt(self, mock_anyio_run, mock_shell_class):
+    @patch("aish.shell_pty.run_shell")
+    def test_run_command_keyboard_interrupt(self, mock_run_shell):
         """Test run command handles keyboard interrupt"""
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
-        mock_anyio_run.side_effect = KeyboardInterrupt()
+        mock_run_shell.side_effect = KeyboardInterrupt()
 
         with patch("aish.cli.needs_interactive_setup", return_value=False):
             result = self.runner.invoke(app, ["run"])
 
         assert result.exit_code == 0
         assert t("cli.startup.goodbye") in result.output
-        mock_shell_class.assert_called_once()
-        mock_anyio_run.assert_called_once()
+        mock_run_shell.assert_called_once()
 
     @patch("aish.cli.run_interactive_setup")
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
+    @patch("aish.shell_pty.run_shell")
     def test_run_skips_interactive_setup_when_config_present(
-        self, mock_anyio_run, mock_shell_class, mock_run_interactive_setup
+        self, mock_run_shell, mock_run_interactive_setup
     ):
         """Run should not invoke setup when config already has model + api_key."""
-
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
 
         mock_config = Mock()
         mock_config.config_file = "/tmp/aish-config.yaml"
@@ -181,15 +149,11 @@ class TestCLI:
         mock_run_interactive_setup.assert_not_called()
 
     @patch("aish.cli.run_interactive_setup")
-    @patch("aish.cli.AIShell")
-    @patch("aish.cli.anyio.run")
+    @patch("aish.shell_pty.run_shell")
     def test_run_invokes_interactive_setup_when_config_missing(
-        self, mock_anyio_run, mock_shell_class, mock_run_interactive_setup
+        self, mock_run_shell, mock_run_interactive_setup
     ):
         """Run should invoke setup when model or api_key is missing."""
-
-        mock_shell = Mock()
-        mock_shell_class.return_value = mock_shell
 
         mock_config = Mock()
         mock_config.config_file = "/tmp/aish-config.yaml"
