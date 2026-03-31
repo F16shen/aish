@@ -157,7 +157,11 @@ class InputRouter:
                 return
             self._cursor_tracking_dirty = True
             self._suggestion_engine.clear()
-            self.pty_manager.send(data)
+            # Standalone Esc - route to _handle_char for Esc handling logic
+            if data == b"\x1b":
+                self._process_normal_input(data)
+            else:
+                self.pty_manager.send(data)
             return
 
         self._process_normal_input(data)
@@ -256,6 +260,22 @@ class InputRouter:
                 sys.stdout.write("\r\n^C\r\n")
                 sys.stdout.flush()
                 return
+
+            # Check if AI operation is in progress
+            shell = self.ai_handler.shell if self.ai_handler else None
+            if shell and shell.operation_in_progress:
+                # Dedup: skip if already handling an interrupt
+                if self.interruption_manager and not self.interruption_manager.try_acquire_interrupt():
+                    return
+                # Trigger interrupt callback (cancels LLM)
+                if self.interruption_manager:
+                    self.interruption_manager.trigger_interrupt()
+                # Forward \x03 to PTY for command-level interrupt
+                self.pty_manager.send(char.encode())
+                self._current_cmd = ""
+                self._cursor_tracking_dirty = False
+                return
+
             if self.interruption_manager:
                 has_input = bool(self._current_cmd.strip())
                 action = self.interruption_manager.handle_ctrl_c(has_input)
@@ -269,14 +289,18 @@ class InputRouter:
                 self._current_cmd = ""
                 self._cursor_tracking_dirty = False
 
-                if action == InterruptAction.CONFIRM_EXIT:
+                if action == InterruptAction.CLEAR_INPUT:
+                    # Input cleared, prompt redraws via PTY
+                    pass
+                elif action == InterruptAction.CONFIRM_EXIT:
                     if self._placeholder_refresh_timer:
                         self._placeholder_refresh_timer.cancel()
                         self._placeholder_refresh_timer = None
-                    shell = self.ai_handler.shell if self.ai_handler else None
                     if shell is not None:
                         shell._running = False
                 elif action == InterruptAction.REQUEST_EXIT:
+                    sys.stdout.write("\r\n\x1b[33m<press Ctrl+C again to exit>\x1b[0m\r\n")
+                    sys.stdout.flush()
                     if self.interruption_manager:
                         self._schedule_placeholder_refresh(
                             self.interruption_manager.EXIT_WINDOW
@@ -286,6 +310,27 @@ class InputRouter:
             self.pty_manager.send(char.encode())
             self._current_cmd = ""
             self._cursor_tracking_dirty = False
+            return
+
+        if char == "\x1b" and not self._at_line_start:
+            # Esc key - only handle when user has typed something
+            # (at line start, \x1b is an escape sequence start)
+            self._suggestion_engine.clear()
+            if self.interruption_manager:
+                has_input = bool(self._current_cmd.strip())
+                action = self.interruption_manager.handle_esc(has_input)
+                if action == InterruptAction.CLEAR_INPUT:
+                    self.pty_manager.send(b"\x03")
+                    self._current_cmd = ""
+                    self._at_line_start = True
+                    self._cursor_tracking_dirty = False
+                    if self.placeholder_manager and self.placeholder_manager.is_visible():
+                        clear_seq = self.placeholder_manager.clear_placeholder()
+                        sys.stdout.buffer.write(clear_seq)
+                        sys.stdout.buffer.flush()
+                elif action == InterruptAction.CANCEL_PENDING:
+                    sys.stdout.write("\r\n\x1b[33m<press Esc again to clear>\x1b[0m\r\n")
+                    sys.stdout.flush()
             return
 
         if char in ("\x01", "\x02", "\x05", "\x06"):

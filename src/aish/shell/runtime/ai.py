@@ -94,26 +94,46 @@ class AIHandler:
             return None
 
     @staticmethod
-    def _run_async_in_thread(coro):
-        """Run an async coroutine in a separate thread with its own event loop."""
+    def _run_async_in_thread(coro, cancellation_token=None):
+        """Run an async coroutine in a separate thread with its own event loop.
+
+        Uses polling-based cancellation to allow Ctrl+C interruption.
+        """
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
+
+        result_box = [None]
+        exc_box = [None]
 
         def run_in_thread():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                return loop.run_until_complete(coro)
+                result_box[0] = loop.run_until_complete(coro)
+            except BaseException as e:
+                exc_box[0] = e
             finally:
-                # Cancel all pending tasks before closing the loop to avoid
-                # "Task pending" warnings from streaming async generators
                 for task in asyncio.all_tasks(loop):
                     task.cancel()
                 loop.run_until_complete(asyncio.sleep(0))
                 loop.close()
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(run_in_thread).result()
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(run_in_thread)
+        try:
+            while not future.done():
+                try:
+                    future.result(timeout=0.2)
+                except TimeoutError:
+                    # Check if cancellation was requested
+                    if cancellation_token and cancellation_token.is_cancelled():
+                        raise KeyboardInterrupt("AI operation cancelled by user")
+        finally:
+            pool.shutdown(wait=False)
+        # Future is done, get result or raise exception
+        if exc_box[0] is not None:
+            raise exc_box[0]
+        return result_box[0]
 
     def _extract_skill_refs(self, text: str) -> list[str]:
         """Extract skill references from text."""
@@ -136,6 +156,84 @@ class AIHandler:
             return text
         prefix = " ".join([f"use {name} skill to do this." for name in refs])
         return f"{prefix}\n\n{text}"
+
+    def _execute_ai_operation(self, coro, shell, history_entry=None):
+        """Execute an AI operation with state management and interrupt handling.
+
+        Handles input buffer save, state transitions, temporary SIGINT
+        handler, async execution with cancellation, and cleanup.
+        """
+        from ...interruption import ShellState
+
+        self.llm_session.reset_cancellation_token()
+        shell._user_requested_exit = False
+
+        # Save input buffer before AI call for potential restore
+        if hasattr(shell, '_input_router') and shell._input_router:
+            current_cmd = shell._input_router._current_cmd
+            if current_cmd:
+                shell.interruption_manager.save_input_buffer(current_cmd)
+
+        shell.interruption_manager.set_state(ShellState.AI_THINKING)
+        shell.operation_in_progress = True
+
+        # Record to history
+        if history_entry:
+            try:
+                shell.history_manager._add_entry_sync(**history_entry)
+            except Exception:
+                pass
+
+        # Install temporary SIGINT handler since main thread is blocked
+        # in cooked mode during AI call. Without this, Ctrl+C generates
+        # SIGINT which kills the shell entirely.
+        import signal as _signal
+
+        def _sigint_handler(signum, frame):
+            shell._on_interrupt_requested()
+            raise KeyboardInterrupt()
+
+        _prev_sigint = _signal.getsignal(_signal.SIGINT)
+        _signal.signal(_signal.SIGINT, _sigint_handler)
+        response = None
+        try:
+            response = self._run_async_in_thread(
+                coro, cancellation_token=self.llm_session.cancellation_token
+            )
+        except (
+            anyio.get_cancelled_exc_class(),
+            asyncio.CancelledError,
+            KeyboardInterrupt,
+        ):
+            shell.handle_processing_cancelled()
+        finally:
+            _signal.signal(_signal.SIGINT, _prev_sigint)
+            shell.interruption_manager.set_state(ShellState.NORMAL)
+            shell.operation_in_progress = False
+
+        return response
+
+    def _trigger_prompt_and_wait(self) -> None:
+        """Trigger prompt redraw and wait for PTY output."""
+        self._trigger_prompt_redraw()
+        self.pty_manager.send(b"\n")
+        max_wait = 0.2
+        start_wait = time.time()
+        while (time.time() - start_wait) < max_wait:
+            ready, _, _ = select.select(
+                [self.pty_manager._master_fd], [], [], 0.05
+            )
+            if ready:
+                try:
+                    data = os.read(self.pty_manager._master_fd, 4096)
+                    if data:
+                        cleaned = self.pty_manager.exit_tracker.parse_and_update(data)
+                        cleaned = cleaned.lstrip(b"\r\n")
+                        if cleaned:
+                            sys.stdout.buffer.write(cleaned)
+                            sys.stdout.buffer.flush()
+                except OSError:
+                    break
 
     def handle_error_correction(self) -> None:
         """Handle error correction."""
@@ -184,38 +282,17 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     return response
 
             shell = self._require_shell()
-            self.llm_session.reset_cancellation_token()
-            shell._user_requested_exit = False
-
-            from ...interruption import ShellState
-
-            shell.interruption_manager.set_state(ShellState.AI_THINKING)
-            shell.operation_in_progress = True
-
-            # Record error correction to history
-            try:
-                shell.history_manager._add_entry_sync(
-                    command=f"[error_fix] {cmd}",
-                    source="ai",
-                    returncode=None,
-                    stdout=None,
-                    stderr=None,
-                )
-            except Exception:
-                pass
-
-            try:
-                response = self._run_async_in_thread(_fix())
-            except (
-                anyio.get_cancelled_exc_class(),
-                asyncio.CancelledError,
-                KeyboardInterrupt,
-            ):
-                shell.handle_processing_cancelled()
-                return
-            finally:
-                shell.interruption_manager.set_state(ShellState.NORMAL)
-                shell.operation_in_progress = False
+            response = self._execute_ai_operation(
+                _fix(),
+                shell,
+                history_entry={
+                    "command": f"[error_fix] {cmd}",
+                    "source": "ai",
+                    "returncode": None,
+                    "stdout": None,
+                    "stderr": None,
+                },
+            )
 
             executed_cmd = False
             if response:
@@ -224,30 +301,11 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     executed_cmd = self._ask_execute_command(corrected_cmd)
 
             if not executed_cmd:
-                self._trigger_prompt_redraw()
-                self.pty_manager.send(b"\n")
-                max_wait = 0.2
-                start_wait = time.time()
-                while (time.time() - start_wait) < max_wait:
-                    ready, _, _ = select.select(
-                        [self.pty_manager._master_fd], [], [], 0.05
-                    )
-                    if ready:
-                        try:
-                            data = os.read(self.pty_manager._master_fd, 4096)
-                            if data:
-                                cleaned = self.pty_manager.exit_tracker.parse_and_update(data)
-                                cleaned = cleaned.lstrip(b"\r\n")
-                                if cleaned:
-                                    sys.stdout.buffer.write(cleaned)
-                                    sys.stdout.buffer.flush()
-                        except OSError:
-                            break
-
-            self._set_raw_mode()
+                self._trigger_prompt_and_wait()
 
         except Exception as error:
             print(f"\r\033[KError: {error}")
+        finally:
             self._set_raw_mode()
 
     def handle_question(self, question: str) -> None:
@@ -277,65 +335,26 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     return response
 
             shell = self._require_shell()
-            self.llm_session.reset_cancellation_token()
-            shell._user_requested_exit = False
-
-            from ...interruption import ShellState
-
-            shell.interruption_manager.set_state(ShellState.AI_THINKING)
-            shell.operation_in_progress = True
-
-            # Record AI question to history
-            try:
-                shell.history_manager._add_entry_sync(
-                    command=question,
-                    source="ai",
-                    returncode=None,
-                    stdout=None,
-                    stderr=None,
-                )
-            except Exception:
-                pass
-
-            try:
-                response = self._run_async_in_thread(_ask())
-            except (
-                anyio.get_cancelled_exc_class(),
-                asyncio.CancelledError,
-                KeyboardInterrupt,
-            ):
-                shell.handle_processing_cancelled()
-                return
-            finally:
-                shell.interruption_manager.set_state(ShellState.NORMAL)
-                shell.operation_in_progress = False
+            response = self._execute_ai_operation(
+                _ask(),
+                shell,
+                history_entry={
+                    "command": question,
+                    "source": "ai",
+                    "returncode": None,
+                    "stdout": None,
+                    "stderr": None,
+                },
+            )
 
             if response:
                 self._display_ai_response(response)
 
-            self._trigger_prompt_redraw()
-            self.pty_manager.send(b"\n")
-
-            max_wait = 0.2
-            start_wait = time.time()
-            while (time.time() - start_wait) < max_wait:
-                ready, _, _ = select.select([self.pty_manager._master_fd], [], [], 0.05)
-                if ready:
-                    try:
-                        data = os.read(self.pty_manager._master_fd, 4096)
-                        if data:
-                            cleaned = self.pty_manager.exit_tracker.parse_and_update(data)
-                            cleaned = cleaned.lstrip(b"\r\n")
-                            if cleaned:
-                                sys.stdout.buffer.write(cleaned)
-                                sys.stdout.buffer.flush()
-                    except OSError:
-                        break
-
-            self._set_raw_mode()
+            self._trigger_prompt_and_wait()
 
         except Exception as error:
             print(f"\r\033[KError: {error}")
+        finally:
             self._set_raw_mode()
 
     def _trigger_prompt_redraw(self) -> None:

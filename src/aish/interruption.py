@@ -85,6 +85,10 @@ class InterruptionManager:
         # 最后的 AI 执行状态（用于显示取消消息）
         self._last_ai_state: Optional[ShellState] = None
 
+        # Atomic dedup for interrupt handling (prevents signal handler
+        # and input router from both processing the same interrupt)
+        self._interrupt_dedup_event = threading.Event()
+
     @property
     def state(self) -> ShellState:
         """获取当前状态"""
@@ -232,6 +236,20 @@ class InterruptionManager:
         """触发中断（调用回调函数）"""
         if self._on_interrupt_callback:
             self._on_interrupt_callback()
+
+    def try_acquire_interrupt(self) -> bool:
+        """Atomically acquire interrupt permission (dedup).
+
+        Returns True if this interrupt should be processed,
+        False if it's a duplicate. Auto-resets after 500ms.
+        """
+        if self._interrupt_dedup_event.is_set():
+            return False
+        self._interrupt_dedup_event.set()
+        t = threading.Timer(0.5, self._interrupt_dedup_event.clear)
+        t.daemon = True
+        t.start()
+        return True
 
     # ===== Ctrl+C 处理逻辑 =====
 
