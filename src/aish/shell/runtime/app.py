@@ -42,7 +42,7 @@ from .events import LLMEventRouter
 from ..ui.interaction import PTYUserInteraction
 from .output import OutputProcessor
 from ..ui.placeholder import PlaceholderManager
-from ..ui.prompt_io import display_security_panel, get_user_confirmation
+from ..ui.prompt_io import display_security_panel, get_user_confirmation, handle_interaction_required
 from .router import InputRouter
 
 if TYPE_CHECKING:
@@ -132,7 +132,7 @@ class PTYAIShell:
                 LLMEventType.TOOL_EXECUTION_END: self.handle_tool_execution_end,
                 LLMEventType.ERROR: self.handle_error_event,
                 LLMEventType.CANCELLED: self.handle_processing_cancelled,
-                LLMEventType.INTERACTION_REQUIRED: self.handle_ask_user_required,
+                LLMEventType.INTERACTION_REQUIRED: self.handle_interaction_required,
                 LLMEventType.TOOL_CONFIRMATION_REQUIRED: self.handle_tool_confirmation_required,
             }
         )
@@ -558,34 +558,8 @@ class PTYAIShell:
 
         self.interruption_manager.clear_last_ai_state()
 
-    def handle_ask_user_required(self, event):
-        from ...llm import LLMCallbackResult
-
-        data = event.data or {}
-        prompt = data.get("prompt", "")
-        options = data.get("options", [])
-        allow_custom_input = data.get("allow_custom_input", False)
-
-        try:
-            choice_value, custom_input = self.user_interaction.request_choice(
-                prompt, options, allow_custom_input
-            )
-
-            if choice_value:
-                data["selected_value"] = choice_value
-            elif custom_input:
-                data["selected_value"] = custom_input
-
-            if choice_value:
-                data["choice"] = choice_value
-            elif custom_input:
-                data["custom_input"] = custom_input
-            else:
-                data["cancelled"] = True
-            return LLMCallbackResult.CONTINUE
-        except Exception as error:
-            data["error"] = str(error)
-            return LLMCallbackResult.CONTINUE
+    def handle_interaction_required(self, event):
+        return handle_interaction_required(self, event)
 
     def handle_tool_confirmation_required(self, event):
         from ...llm import LLMCallbackResult
@@ -752,6 +726,34 @@ class PTYAIShell:
         self.console.print()
         self._content_preview_active = False
         self._at_line_start = True
+
+    def _read_terminal_size(self) -> tuple[int, int]:
+        """Return terminal (rows, cols), falling back to (24, 80)."""
+        try:
+            size = shutil.get_terminal_size()
+            return (size.lines, size.columns)
+        except Exception:
+            return (24, 80)
+
+    def _compute_ask_user_max_visible(
+        self,
+        total_options: int,
+        term_rows: int,
+        allow_custom_input: bool,
+        max_visible_cap: int = 12,
+    ) -> int:
+        """Calculate how many option rows the modal can show."""
+        # Fixed rows: title(1) + separator_top(1) + prompt(1) + blank(1)
+        #             + separator_bottom(1) + hint(1) = 6
+        fixed_rows = 6
+        if allow_custom_input:
+            fixed_rows += 2  # custom header + input row
+        available = max(1, term_rows - fixed_rows)
+        return min(available, max_visible_cap, max(1, total_options))
+
+    def _is_ui_resize_enabled(self) -> bool:
+        """Whether the modal should watch for terminal resize events."""
+        return True
 
     @staticmethod
     def _safe_cancel_scope():

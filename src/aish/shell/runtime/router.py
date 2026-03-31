@@ -289,6 +289,14 @@ class InputRouter:
                 self._current_cmd = ""
                 self._cursor_tracking_dirty = False
 
+                # Suppress error hint for Ctrl+C (not a real command failure)
+                if self.output_processor and action in (
+                    InterruptAction.CLEAR_INPUT,
+                    InterruptAction.REQUEST_EXIT,
+                    InterruptAction.CONFIRM_EXIT,
+                ):
+                    self.output_processor.suppress_next_error_hint()
+
                 if action == InterruptAction.CLEAR_INPUT:
                     # Input cleared, prompt redraws via PTY
                     pass
