@@ -255,7 +255,7 @@ __aish_prompt_command() {
     __AISH_AT_PROMPT=1
     __aish_emit_prompt_ready "$exit_code"
 
-    local cmd=$(HISTTIMEFORMAT='' history 1 2>/dev/null | sed 's/^\s*[0-9]\+\s*//')
+    local cmd=$(HISTTIMEFORMAT='' history 1 2>/dev/null | sed 's/^\s*[0-9]\+\s*//; s/^__AISH_ACTIVE_COMMAND_SEQ=[0-9]\+; //')
     cmd="${cmd//]/%5D}"
     printf "[AISH_EXIT:%s:%s]" "$exit_code" "$cmd"
 }

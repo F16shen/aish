@@ -30,13 +30,19 @@ class OutputProcessor:
         self.shell = shell
         self._current_command: str = ""
         self._last_recorded_result: tuple[str, int] | None = None
+        self._suppress_error_hint: bool = False
 
     def set_waiting_for_result(self, waiting: bool, command: str = "") -> None:
         """Set whether we're waiting for a command result."""
         self._waiting_for_result = waiting
+        self._suppress_error_hint = False
         if waiting:
             self._current_command = command
             self.pty_manager.exit_tracker.clear_exit_available()
+
+    def suppress_next_error_hint(self) -> None:
+        """Suppress the next error correction hint (e.g., after Ctrl+C for exit)."""
+        self._suppress_error_hint = True
 
     def set_current_command(self, command: str) -> None:
         """Set the current command being executed."""
@@ -97,9 +103,12 @@ class OutputProcessor:
 
             error_info = tracker.consume_error()
             if error_info is not None:
-                hint = t("shell.error_correction.press_semicolon_hint")
-                sys.stdout.write(f"\033[33m<{hint}>\033[0m\r\n")
-                sys.stdout.flush()
+                if self._suppress_error_hint:
+                    self._suppress_error_hint = False
+                else:
+                    hint = t("shell.error_correction.press_semicolon_hint")
+                    sys.stdout.write(f"\033[33m<{hint}>\033[0m\r\n")
+                    sys.stdout.flush()
             self._waiting_for_result = False
             self._current_command = ""
             tracker.clear_exit_available()
