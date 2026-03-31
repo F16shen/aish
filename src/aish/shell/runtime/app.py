@@ -637,6 +637,10 @@ class PTYAIShell:
                     try:
                         with signal_scope:
                             async for _ in sigs:
+                                # Dedup: if router already handled this
+                                # interrupt, skip signal-level handling
+                                if not self.interruption_manager.try_acquire_interrupt():
+                                    continue
                                 if self._current_op_scope is not None:
                                     self._current_op_scope.cancel()
                                 self.llm_session.cancellation_token.cancel(
