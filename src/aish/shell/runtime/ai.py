@@ -95,11 +95,25 @@ class AIHandler:
 
     @staticmethod
     def _run_async_in_thread(coro):
-        """Run an async function in a separate thread with its own event loop."""
+        """Run an async coroutine in a separate thread with its own event loop."""
+        import asyncio
         from concurrent.futures import ThreadPoolExecutor
 
+        def run_in_thread():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                # Cancel all pending tasks before closing the loop to avoid
+                # "Task pending" warnings from streaming async generators
+                for task in asyncio.all_tasks(loop):
+                    task.cancel()
+                loop.run_until_complete(asyncio.sleep(0))
+                loop.close()
+
         with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(anyio.run, coro).result()
+            return pool.submit(run_in_thread).result()
 
     def _extract_skill_refs(self, text: str) -> list[str]:
         """Extract skill references from text."""
@@ -157,12 +171,14 @@ class AIHandler:
                     prompt = f"""<command_result>
 Command: {cmd}
 Exit code: {tracker.last_exit_code}
-</command_result>"""
+</command_result>
 
-                    response = await self.llm_session.completion(
+Please analyze the error and suggest a fix. Check the shell history context above for the actual error output."""
+
+                    response = await self.llm_session.process_input(
                         prompt,
+                        context_manager=self.context_manager,
                         system_message=system_message,
-                        emit_events=True,
                         stream=True,
                     )
                     return response
@@ -176,8 +192,20 @@ Exit code: {tracker.last_exit_code}
             shell.interruption_manager.set_state(ShellState.AI_THINKING)
             shell.operation_in_progress = True
 
+            # Record error correction to history
             try:
-                response = self._run_async_in_thread(_fix)
+                shell.history_manager._add_entry_sync(
+                    command=f"[error_fix] {cmd}",
+                    source="ai",
+                    returncode=None,
+                    stdout=None,
+                    stderr=None,
+                )
+            except Exception:
+                pass
+
+            try:
+                response = self._run_async_in_thread(_fix())
             except (
                 anyio.get_cancelled_exc_class(),
                 asyncio.CancelledError,
@@ -257,8 +285,20 @@ Exit code: {tracker.last_exit_code}
             shell.interruption_manager.set_state(ShellState.AI_THINKING)
             shell.operation_in_progress = True
 
+            # Record AI question to history
             try:
-                response = self._run_async_in_thread(_ask)
+                shell.history_manager._add_entry_sync(
+                    command=question,
+                    source="ai",
+                    returncode=None,
+                    stdout=None,
+                    stderr=None,
+                )
+            except Exception:
+                pass
+
+            try:
+                response = self._run_async_in_thread(_ask())
             except (
                 anyio.get_cancelled_exc_class(),
                 asyncio.CancelledError,

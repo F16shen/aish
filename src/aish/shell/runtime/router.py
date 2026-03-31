@@ -117,6 +117,8 @@ class InputRouter:
                 if suffix:
                     self.pty_manager.send(suffix.encode("utf-8"))
                     self._current_cmd += suffix
+                    # Update exit tracker with the full command
+                    self.pty_manager.exit_tracker.set_last_command(self._current_cmd)
                     return
             if self._in_ai_mode:
                 return
@@ -180,9 +182,12 @@ class InputRouter:
                     ) or cmd_stripped.startswith(("exit ", "logout "))
                     if self.output_processor:
                         if not is_exit_cmd:
-                            self.output_processor.set_waiting_for_result(True)
+                            self.output_processor.set_waiting_for_result(True, cmd_stripped)
                         else:
                             self.output_processor.set_filter_exit_echo(True)
+                            shell = self.ai_handler.shell if self.ai_handler else None
+                            if shell is not None:
+                                shell._user_requested_exit = True
                 self.pty_manager.send(b"\r")
                 self._at_line_start = True
                 self._current_cmd = ""
@@ -287,9 +292,23 @@ class InputRouter:
             return
 
         self.pty_manager.send(char.encode())
-        self._current_cmd += char
-        self._at_line_start = False
-        self._suggestion_engine.update(self._current_cmd)
+        # Control characters (< 0x20) are readline commands (Ctrl+R, Ctrl+W, etc.)
+        # They should NOT be tracked as part of the command text
+        if ord(char) >= 0x20 and char != "\x7f":
+            self._current_cmd += char
+            self._at_line_start = False
+            self._suggestion_engine.update(self._current_cmd)
+        else:
+            # Control char like Ctrl+R/Ctrl+W/Ctrl+U invalidates command tracking
+            # since readline modifies the line internally in ways we can't observe
+            self._current_cmd = ""
+            self._at_line_start = True
+            self._suggestion_engine.clear()
+            # For readline control chars, clear to end of line to give readline
+            # a clean slate. Using \x1b[K is safer than cursor movement because
+            # readline will immediately redraw with its own escape sequences.
+            sys.stdout.write("\x1b[K")
+            sys.stdout.flush()
 
     def _process_ai_input(self) -> None:
         """Process collected AI input."""
