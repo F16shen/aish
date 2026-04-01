@@ -6,7 +6,6 @@ import anyio
 import asyncio
 import os
 import re
-import signal
 import sys
 from typing import TYPE_CHECKING, Optional
 
@@ -303,11 +302,10 @@ Please analyze the error and suggest a fix. Check the shell history context abov
             if was_cancelled:
                 return
 
-            executed_cmd = False
             if response:
                 corrected_cmd = self._display_ai_response(response)
                 if corrected_cmd:
-                    executed_cmd = self._ask_execute_command(corrected_cmd)
+                    self._ask_execute_command(corrected_cmd)
 
         except Exception as error:
             print(f"\r\033[KError: {error}")
