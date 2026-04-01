@@ -17,6 +17,8 @@ from ...i18n import t
 from ...prompts import PromptManager
 
 if TYPE_CHECKING:
+    from rich.console import Console
+
     from ...llm import LLMSession
     from ...pty import PTYManager
     from ...skills import SkillManager
@@ -38,6 +40,7 @@ class AIHandler:
         skill_manager: "SkillManager",
         user_interaction: "PTYUserInteraction",
         original_termios: Optional[list] = None,
+        console: Optional["Console"] = None,
     ):
         self.pty_manager = pty_manager
         self.llm_session = llm_session
@@ -46,6 +49,7 @@ class AIHandler:
         self.skill_manager = skill_manager
         self.user_interaction = user_interaction
         self._original_termios = original_termios
+        self.console = console
         self.shell: Optional["PTYAIShell"] = None
 
     def _require_shell(self) -> "PTYAIShell":
@@ -385,14 +389,22 @@ Please analyze the error and suggest a fix. Check the shell history context abov
             except Exception:
                 pass
 
+    def _get_console(self):
+        """Get the shared Console instance, falling back to a new one if needed."""
+        if self.console is not None:
+            return self.console
+        from rich.console import Console
+
+        self.console = Console(force_terminal=True)
+        return self.console
+
     def _display_ai_response(self, response: str) -> Optional[str]:
         """Display AI response, handling JSON command format."""
         from rich.box import HORIZONTALS
-        from rich.console import Console
         from rich.markdown import Markdown
         from rich.panel import Panel
 
-        console = Console()
+        console = self._get_console()
 
         json_cmd = self._try_parse_json_output(response)
         if json_cmd:
@@ -400,21 +412,27 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                 command = json_cmd.get("command", "").strip()
                 description = json_cmd.get("description", "")
                 if not command:
-                    print(f"\033[33m⚠ {t('shell.error_correction.no_valid_command')}\033[0m")
+                    console.print(
+                        f"[yellow]⚠ {t('shell.error_correction.no_valid_command')}[/yellow]"
+                    )
                     if description:
                         clean_desc = description.split("Insufficient context")[0].strip()
                         if clean_desc:
-                            print(f"   {clean_desc}")
-                    print(f"   \033[36m{t('shell.error_correction.retry_hint')}\033[0m")
+                            console.print(f"   {clean_desc}")
+                    console.print(
+                        f"   [cyan]{t('shell.error_correction.retry_hint')}[/cyan]"
+                    )
                     sys.stdout.flush()
                     sys.stderr.flush()
                     console.show_cursor()
                     return None
-                print(
-                    f"{t('shell.error_correction.corrected_command_title')} \033[1;36m{command}\033[0m"
+                console.print(
+                    f"{t('shell.error_correction.corrected_command_title')} [bold cyan]{command}[/bold cyan]"
                 )
                 if description:
-                    print(f"   {description}")
+                    console.print(f"   {description}")
+                sys.stdout.flush()
+                sys.stderr.flush()
                 return command
 
             console.print(Panel(Markdown(response), border_style="green", box=HORIZONTALS))
