@@ -4,6 +4,7 @@ import fcntl
 import os
 import pty
 import select
+import shlex
 import signal
 import struct
 import termios
@@ -96,6 +97,11 @@ class PTYManager:
     def last_exit_code(self) -> int:
         """Return the last completed command exit code."""
         return self._command_state.last_exit_code
+
+    @property
+    def can_correct_last_error(self) -> bool:
+        """Return whether the last completed command should offer AI correction."""
+        return self._command_state.can_correct_last_error
 
     @property
     def control_fd(self) -> Optional[int]:
@@ -270,7 +276,11 @@ class PTYManager:
         )
         command_to_send = command
         if command_seq is not None:
-            command_to_send = f"__AISH_ACTIVE_COMMAND_SEQ={command_seq}; {command}"
+            quoted_command = shlex.quote(command)
+            command_to_send = (
+                f" __AISH_ACTIVE_COMMAND_SEQ={command_seq}; "
+                f"__AISH_ACTIVE_COMMAND_TEXT={quoted_command}; {command}"
+            )
         self.send((command_to_send + "\n").encode())
 
     def register_user_command(self, command: str) -> None:

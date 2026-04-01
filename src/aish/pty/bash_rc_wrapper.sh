@@ -14,6 +14,17 @@ if [ -f /etc/bash.bashrc ]; then
     source /etc/bash.bashrc
 fi
 
+case ":${HISTCONTROL:-}:" in
+    *:ignorespace:*|*:ignoreboth:*)
+        ;;
+    "::")
+        HISTCONTROL="ignorespace"
+        ;;
+    *)
+        HISTCONTROL="${HISTCONTROL}:ignorespace"
+        ;;
+esac
+
 # Set up exit code tracking
 __aish_last_exit_code=0
 __AISH_PROTOCOL_VERSION=1
@@ -70,6 +81,7 @@ __aish_emit_prompt_ready() {
         "$__AISH_PROTOCOL_VERSION" "$ts" "$command_seq" "$exit_code" "$cwd_json" "${SHLVL:-0}" "$interrupted"
     __aish_emit_control_line "$payload"
     unset __AISH_ACTIVE_COMMAND_SEQ
+    unset __AISH_ACTIVE_COMMAND_TEXT
 }
 
 __aish_emit_command_started() {
@@ -87,6 +99,39 @@ __aish_emit_command_started() {
         '{"version":%s,"type":"command_started","ts":%s,"command_seq":%s,"command":"%s","cwd":"%s","shlvl":%s}' \
         "$__AISH_PROTOCOL_VERSION" "$ts" "$command_seq" "$command_json" "$(__aish_json_escape "$PWD")" "${SHLVL:-0}"
     __aish_emit_control_line "$payload"
+}
+
+__aish_rewrite_last_history_entry() {
+    local seq="${__AISH_ACTIVE_COMMAND_SEQ:-}"
+    local original_command="${__AISH_ACTIVE_COMMAND_TEXT:-}"
+    local history_line history_index history_command
+
+    if [[ -z "$seq" ]]; then
+        return 0
+    fi
+
+    history_line=$(builtin history 1 2>/dev/null || true)
+    if [[ "$history_line" =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]]; then
+        history_index="${BASH_REMATCH[1]}"
+        history_command="${BASH_REMATCH[2]}"
+
+        if [[ "$history_command" == __AISH_ACTIVE_COMMAND_SEQ=* ]]; then
+            builtin history -d "$history_index" 2>/dev/null || true
+            if [[ -z "$original_command" ]]; then
+                original_command="${history_command#*; }"
+            fi
+        fi
+    fi
+
+    if [[ "$seq" == -* ]]; then
+        return 0
+    fi
+
+    if [[ -z "$original_command" ]]; then
+        return 0
+    fi
+
+    builtin history -s "$original_command" 2>/dev/null || true
 }
 
 __aish_emit_shell_exiting() {
@@ -114,6 +159,9 @@ __aish_on_debug() {
             return 0
             ;;
         __AISH_ACTIVE_COMMAND_SEQ=* )
+            return 0
+            ;;
+        __AISH_ACTIVE_COMMAND_TEXT=* )
             return 0
             ;;
     esac
@@ -244,6 +292,7 @@ __aish_generate_prompt() {
 __aish_prompt_command() {
     local exit_code=$?
     __aish_last_exit_code=$exit_code
+    __aish_rewrite_last_history_entry
     # Call original PROMPT_COMMAND if it exists
     if [[ -n "$__AISH_ORIGINAL_PROMPT_COMMAND" ]]; then
         eval "$__AISH_ORIGINAL_PROMPT_COMMAND"

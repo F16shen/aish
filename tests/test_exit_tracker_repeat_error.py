@@ -148,3 +148,29 @@ def test_interrupted_command_does_not_offer_error_correction():
     tracker.handle_backend_event(_command_started("sleep 5"))
     tracker.handle_backend_event(_prompt_ready(130, interrupted=True))
     assert tracker.consume_error() is None
+
+
+@pytest.mark.timeout(5)
+def test_interactive_ssh_session_exit_does_not_offer_error_correction():
+    """Interactive ssh exits should not be treated as shell-command failures."""
+    tracker = CommandState()
+
+    tracker.register_user_command("ssh root@example.com")
+    tracker.handle_backend_event(_command_started("ssh root@example.com"))
+    tracker.handle_backend_event(_prompt_ready(255))
+
+    assert tracker.consume_error() is None
+    assert tracker.can_correct_last_error is False
+
+
+@pytest.mark.timeout(5)
+def test_ssh_remote_command_failure_still_offers_error_correction():
+    """Non-interactive ssh remote commands should still behave like normal failures."""
+    tracker = CommandState()
+
+    tracker.register_user_command("ssh root@example.com ls /missing")
+    tracker.handle_backend_event(_command_started("ssh root@example.com ls /missing"))
+    tracker.handle_backend_event(_prompt_ready(2))
+
+    assert tracker.consume_error() == ("ssh root@example.com ls /missing", 2)
+    assert tracker.can_correct_last_error is True

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import sys
 from typing import TYPE_CHECKING, Optional
 
@@ -56,8 +57,12 @@ class OutputProcessor:
         if not command or command_seq is None:
             self._pending_user_echo = None
             return
+        quoted_command = shlex.quote(command)
         self._pending_user_echo = (
-            f"__AISH_ACTIVE_COMMAND_SEQ={command_seq}; {command}".encode("utf-8")
+            (
+                f" __AISH_ACTIVE_COMMAND_SEQ={command_seq}; "
+                f"__AISH_ACTIVE_COMMAND_TEXT={quoted_command}; {command}"
+            ).encode("utf-8")
         )
 
     def _consume_pending_user_echo(self, data: bytes) -> bytes:

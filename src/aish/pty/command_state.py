@@ -2,9 +2,49 @@
 
 from __future__ import annotations
 
+import os
+import re
+import shlex
 from dataclasses import dataclass
 
 from .control_protocol import BackendControlEvent
+
+_SESSION_COMMANDS = frozenset({
+    "ftp",
+    "mosh",
+    "mosh-client",
+    "nc",
+    "netcat",
+    "sftp",
+    "ssh",
+    "telnet",
+})
+_SUDO_SHELL_FLAGS = frozenset({"-i", "-s"})
+_SHELL_LAUNCHERS = frozenset({"bash", "fish", "ksh", "sh", "su", "zsh"})
+_SSH_OPTIONS_WITH_VALUE = frozenset(
+    {
+        "-b",
+        "-c",
+        "-D",
+        "-E",
+        "-e",
+        "-F",
+        "-I",
+        "-i",
+        "-J",
+        "-L",
+        "-l",
+        "-m",
+        "-O",
+        "-o",
+        "-p",
+        "-Q",
+        "-R",
+        "-S",
+        "-W",
+        "-w",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -15,6 +55,7 @@ class CommandSubmission:
     source: str
     command_seq: int | None = None
     error_correction_dismissed: bool = False
+    allow_error_correction: bool = False
 
 
 @dataclass(slots=True)
@@ -26,6 +67,7 @@ class CommandResult:
     source: str
     command_seq: int | None = None
     interrupted: bool = False
+    allow_error_correction: bool = False
 
 
 class CommandState:
@@ -50,6 +92,16 @@ class CommandState:
     @property
     def last_result(self) -> CommandResult | None:
         return self._last_result
+
+    @property
+    def can_correct_last_error(self) -> bool:
+        result = self._last_result
+        return bool(
+            result is not None
+            and result.allow_error_correction
+            and result.exit_code != 0
+            and not result.interrupted
+        )
 
     def register_user_command(self, command: str) -> None:
         self.register_command(command, source="user", command_seq=None)
@@ -119,13 +171,14 @@ class CommandState:
             source=submission.source,
             command_seq=command_seq,
             interrupted=interrupted,
+            allow_error_correction=submission.allow_error_correction,
         )
 
         self._last_command = result.command
         self._last_exit_code = result.exit_code
         self._last_result = result
 
-        if result.source == "user" and result.exit_code != 0 and not result.interrupted:
+        if result.allow_error_correction and result.exit_code != 0 and not result.interrupted:
             self._pending_error = result
         else:
             self._pending_error = None
@@ -155,11 +208,119 @@ class CommandState:
             command=command,
             source=source,
             command_seq=command_seq,
+            allow_error_correction=self._should_offer_error_correction(
+                command=command,
+                source=source,
+            ),
         )
         self._active_submission = submission
         if command_seq is not None:
             self._submitted_by_seq[command_seq] = submission
         return submission
+
+    @classmethod
+    def _should_offer_error_correction(cls, *, command: str, source: str) -> bool:
+        if source != "user":
+            return False
+
+        command = str(command or "").strip()
+        if not command:
+            return False
+
+        return not cls._is_interactive_session_command(command)
+
+    @classmethod
+    def _is_interactive_session_command(cls, command: str) -> bool:
+        words = cls._extract_command_words(command)
+        if not words:
+            return False
+
+        executable = os.path.basename(words[0]).lower()
+        if executable == "ssh":
+            return cls._is_interactive_ssh_invocation(words)
+
+        if executable in _SESSION_COMMANDS:
+            return True
+
+        if executable == "su":
+            return True
+
+        if executable != "sudo":
+            return False
+
+        remaining = words[1:]
+        if not remaining:
+            return False
+
+        for token in remaining:
+            if token == "--":
+                continue
+            if token in _SUDO_SHELL_FLAGS:
+                return True
+            if token.startswith("-"):
+                continue
+            lowered = os.path.basename(token).lower()
+            return lowered in _SHELL_LAUNCHERS
+
+        return False
+
+    @classmethod
+    def _extract_command_words(cls, command: str) -> list[str]:
+        parts = cls._split_compound_command(command)
+        if not parts:
+            return []
+
+        try:
+            tokens = shlex.split(parts[-1])
+        except ValueError:
+            tokens = parts[-1].split()
+
+        words: list[str] = []
+        for token in tokens:
+            if not words and cls._is_env_assignment(token):
+                continue
+            words.append(token)
+
+        return words
+
+    @staticmethod
+    def _split_compound_command(command: str) -> list[str]:
+        parts = re.split(r"\s*(?:\|\||&&|[;|&])\s*", command)
+        return [part.strip() for part in parts if part.strip()]
+
+    @staticmethod
+    def _is_env_assignment(token: str) -> bool:
+        if not token or token.startswith("="):
+            return False
+        name, _, value = token.partition("=")
+        return bool(name) and bool(value or token.endswith("=")) and name.replace("_", "a").isalnum() and not name[0].isdigit()
+
+    @classmethod
+    def _is_interactive_ssh_invocation(cls, words: list[str]) -> bool:
+        index = 1
+        while index < len(words):
+            token = words[index]
+            if token == "--":
+                index += 1
+                break
+            if not token.startswith("-") or token == "-":
+                break
+            if cls._ssh_option_takes_value(token):
+                index += 2
+            else:
+                index += 1
+
+        remaining = words[index:]
+        return len(remaining) == 1
+
+    @staticmethod
+    def _ssh_option_takes_value(token: str) -> bool:
+        if token in _SSH_OPTIONS_WITH_VALUE:
+            return True
+        for option in _SSH_OPTIONS_WITH_VALUE:
+            if token.startswith(option) and token != option:
+                return True
+        return False
 
     def _resolve_submission(
         self,

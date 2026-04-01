@@ -7,6 +7,7 @@ import datetime as dt
 import getpass
 import os
 import select
+import shlex
 import shutil
 import signal
 import sys
@@ -26,9 +27,11 @@ from ...context_manager import ContextManager, MemoryType
 from ...history_manager import HistoryManager
 from ...i18n import t
 from ...logging_utils import set_session_uuid
+from ...providers.registry import get_provider_for_model
 from ...pty.control_protocol import BackendControlEvent
 from ...prompts import PromptManager
 from ...pty import PTYManager
+from ...security.security_manager import SimpleSecurityManager
 from ...session_store import SessionRecord, SessionStore
 from ...skills.hotreload import SkillHotReloadService
 from ...utils import (
@@ -37,8 +40,10 @@ from ...utils import (
     get_output_language,
 )
 from ...welcome_screen import build_welcome_renderable
+from ...wizard.setup_wizard import run_interactive_setup
 from .ai import AIHandler
 from .events import LLMEventRouter
+from ...builtin import BuiltinRegistry
 from ..ui.interaction import PTYUserInteraction
 from .output import OutputProcessor
 from ..ui.editor import ShellPromptController
@@ -170,6 +175,10 @@ class PTYAIShell:
         self._pending_command_seq: Optional[int] = None
         self._pending_command_text: Optional[str] = None
         self._current_cwd: str = os.getcwd()
+        self.security_manager = SimpleSecurityManager(
+            console=self.console,
+            repo_root=Path(self._current_cwd).resolve(),
+        )
 
         self._last_exit_code: int = 0
         self._shell_preview_bytes: int = 4096
@@ -235,7 +244,7 @@ class PTYAIShell:
             event_callback=self.handle_llm_event,
             env_manager=None,
             interruption_manager=interruption_manager,
-            is_command_approved=None,
+            is_command_approved=self._is_command_approved,
             history_manager=getattr(self, "history_manager", None),
         )
 
@@ -813,6 +822,96 @@ class PTYAIShell:
         command = str(command)
         return bool(command) and command in self._approved_ai_commands
 
+    def _build_shell_command_security_event_data(
+        self,
+        command: str,
+        analysis: dict[str, object],
+        *,
+        panel_mode: str,
+    ) -> dict[str, object]:
+        panel = {
+            "mode": panel_mode,
+            "target": command,
+            "analysis": analysis,
+            "allow_remember": True,
+            "remember_key": command,
+        }
+        return {
+            "tool_name": "shell_command",
+            "command": command,
+            "security_analysis": analysis,
+            "panel": panel,
+            "panel_mode": panel_mode,
+            "target": command,
+            "analysis": analysis,
+            "allow_remember": True,
+            "remember_key": command,
+        }
+
+    def submit_ai_backend_command(self, command: str) -> bool:
+        from ...interruption import ShellState
+        from ...llm import LLMCallbackResult
+
+        command = command.strip()
+        if not command:
+            return False
+        if not self._pty_manager:
+            return False
+
+        rejected_msg = BuiltinRegistry.get_rejected_command_message(command)
+        if rejected_msg:
+            self.console.print(rejected_msg, style="red")
+            return False
+
+        if self._is_command_approved(command):
+            self.submit_backend_command(command)
+            return True
+
+        cwd = Path(self._current_cwd or os.getcwd()).resolve()
+        self.interruption_manager.set_state(ShellState.SANDBOX_EVAL)
+        try:
+            decision = self.security_manager.decide(
+                command,
+                is_ai_command=True,
+                cwd=cwd,
+            )
+        finally:
+            self.interruption_manager.set_state(ShellState.NORMAL)
+
+        analysis = decision.analysis if isinstance(decision.analysis, dict) else {}
+        if not decision.allow:
+            display_security_panel(
+                self,
+                self._build_shell_command_security_event_data(
+                    command,
+                    analysis,
+                    panel_mode="blocked",
+                ),
+                panel_mode="blocked",
+            )
+            return False
+
+        if decision.require_confirmation:
+            display_security_panel(
+                self,
+                self._build_shell_command_security_event_data(
+                    command,
+                    analysis,
+                    panel_mode="confirm",
+                ),
+                panel_mode="confirm",
+            )
+            response = get_user_confirmation(
+                self,
+                remember_command=command,
+                allow_remember=True,
+            )
+            if response != LLMCallbackResult.APPROVE:
+                return False
+
+        self.submit_backend_command(command)
+        return True
+
     def _check_terminal_resize(self) -> None:
         try:
             current_size = shutil.get_terminal_size()
@@ -901,6 +1000,7 @@ class PTYAIShell:
         self._shell_phase = "editing"
         try:
             line = self._prompt_controller.prompt()
+            line = self._collect_multiline_input(line)
         except KeyboardInterrupt:
             self._editing_buffer_text = ""
             self.console.print("^C", style="dim")
@@ -913,8 +1013,211 @@ class PTYAIShell:
         self._at_line_start = True
         return line
 
+    @staticmethod
+    def _line_requests_continuation(line: str) -> bool:
+        return bool(line) and line.rstrip().endswith("\\")
+
+    @staticmethod
+    def _strip_continuation_backslash(line: str) -> str:
+        stripped = line.rstrip()
+        if not stripped.endswith("\\"):
+            return line
+        return stripped[:-1].rstrip()
+
+    @staticmethod
+    def _merge_multiline_input(lines: list[str], *, ai_mode: bool) -> str:
+        if ai_mode:
+            return "\n".join(lines)
+        return " ".join(line for line in lines if line)
+
+    def _collect_multiline_input(self, first_line: str) -> str:
+        if self._prompt_controller is None:
+            return first_line
+        if not self._line_requests_continuation(first_line):
+            return first_line
+
+        ai_mode = self._is_ai_prefixed_line(first_line.lstrip())
+        lines = [first_line]
+
+        while self._line_requests_continuation(lines[-1]):
+            lines[-1] = self._strip_continuation_backslash(lines[-1])
+            continuation_line = self._prompt_controller.prompt("... ")
+            lines.append(continuation_line)
+
+        return self._merge_multiline_input(lines, ai_mode=ai_mode)
+
     def _is_ai_prefixed_line(self, line: str) -> bool:
         return line.startswith((";", "；"))
+
+    @staticmethod
+    def _parse_command_parts(line: str) -> list[str]:
+        try:
+            return shlex.split(line)
+        except ValueError:
+            return [line.strip()] if line.strip() else []
+
+    @staticmethod
+    def _is_special_command(parts: list[str]) -> bool:
+        if not parts:
+            return False
+        return parts[0] in {"/model", "/setup"}
+
+    def _record_special_command_result(
+        self,
+        command: str,
+        *,
+        exit_code: int,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        self.add_shell_history(command, exit_code, stdout, stderr)
+
+    def handle_model_command(self, user_input: str) -> None:
+        parts = self._parse_command_parts(user_input)
+        if not parts:
+            return
+
+        def _report_error(message: str) -> None:
+            self.console.print(message, style="red")
+            self._record_special_command_result(
+                user_input,
+                exit_code=1,
+                stdout="",
+                stderr=message,
+            )
+
+        if len(parts) == 1:
+            current_model = getattr(self.config, "model", None) or t("shell.model.unset")
+            message = t("shell.model.current", model=current_model)
+            self.console.print(message)
+            self._record_special_command_result(
+                user_input,
+                exit_code=0,
+                stdout=message,
+                stderr="",
+            )
+            return
+
+        if parts[1] in {"--help", "-h"}:
+            message = "Usage: /model [model]"
+            self.console.print(message, style="cyan")
+            self._record_special_command_result(
+                user_input,
+                exit_code=0,
+                stdout=message,
+                stderr="",
+            )
+            return
+
+        new_model = " ".join(parts[1:]).strip()
+        if not new_model:
+            _report_error(t("shell.model.invalid"))
+            return
+
+        if new_model == getattr(self.config, "model", None):
+            message = t("shell.model.switch_same", model=new_model)
+            self.console.print(message, style="dim")
+            self._record_special_command_result(
+                user_input,
+                exit_code=0,
+                stdout=message,
+                stderr="",
+            )
+            return
+
+        self.console.print(t("shell.model.switching", model=new_model), style="dim")
+        provider = get_provider_for_model(new_model)
+
+        async def _validate_model_switch() -> str | None:
+            return await provider.validate_model_switch(model=new_model, config=self.config)
+
+        try:
+            validation_error = anyio.run(_validate_model_switch)
+        except Exception as error:
+            validation_error = t("shell.model.verify_failed", reason=str(error))
+
+        if validation_error:
+            _report_error(validation_error)
+            return
+
+        self.llm_session.update_model(
+            new_model,
+            api_base=getattr(self.config, "api_base", None),
+            api_key=getattr(self.config, "api_key", None),
+        )
+        self.context_manager.set_model(new_model)
+        self.config.model = new_model
+        if self.session_record is not None:
+            self.session_record.model = new_model
+        if self.config_manager is not None:
+            self.config_manager.set_model(new_model)
+
+        message = t("shell.model.switch_success", model=new_model)
+        self.console.print(message, style="green")
+        self._record_special_command_result(
+            user_input,
+            exit_code=0,
+            stdout=message,
+            stderr="",
+        )
+
+    def handle_setup_command(self, user_input: str) -> None:
+        parts = self._parse_command_parts(user_input)
+        if len(parts) > 1 and parts[1] in {"--help", "-h"}:
+            message = "Usage: /setup"
+            self.console.print(message, style="cyan")
+            self._record_special_command_result(
+                user_input,
+                exit_code=0,
+                stdout=message,
+                stderr="",
+            )
+            return
+
+        if self.config_manager is None:
+            message = t("shell.setup.no_config_manager")
+            self.console.print(message, style="red")
+            self._record_special_command_result(
+                user_input,
+                exit_code=1,
+                stdout="",
+                stderr=message,
+            )
+            return
+
+        new_config = run_interactive_setup(self.config_manager)
+        if new_config is None:
+            message = t("shell.setup.cancelled")
+            self.console.print(message, style="yellow")
+            self._record_special_command_result(
+                user_input,
+                exit_code=0,
+                stdout=message,
+                stderr="",
+            )
+            return
+
+        self.llm_session.update_model(
+            new_config.model,
+            api_base=new_config.api_base,
+            api_key=new_config.api_key,
+        )
+        self.context_manager.set_model(new_config.model)
+        self.config.model = new_config.model
+        self.config.api_base = new_config.api_base
+        self.config.api_key = new_config.api_key
+        self.config.is_free_key = new_config.is_free_key
+        if self.session_record is not None:
+            self.session_record.model = new_config.model
+
+        message = t("shell.setup.applied", model=new_config.model)
+        self.console.print(message, style="green")
+        self._record_special_command_result(
+            user_input,
+            exit_code=0,
+            stdout=message,
+            stderr="",
+        )
 
     def _handle_prompt_submission(self, line: str) -> None:
         line = line.rstrip("\r\n")
@@ -934,6 +1237,14 @@ class PTYAIShell:
                 self._ai_handler.handle_question(prompt)
             else:
                 self._ai_handler.handle_error_correction()
+            return
+
+        parts = self._parse_command_parts(line)
+        if self._is_special_command(parts):
+            if parts[0] == "/model":
+                self.handle_model_command(line)
+            elif parts[0] == "/setup":
+                self.handle_setup_command(line)
             return
 
         self.submit_backend_command(line)
