@@ -65,7 +65,7 @@ class PTYAIShell:
         self.config = config
         self.skill_manager = skill_manager
         self.config_manager = config_manager
-        self.console = console or Console()
+        self.console = console or Console(force_terminal=True)
 
         # Session persistence
         self.session_record: Optional[SessionRecord] = None
@@ -902,6 +902,7 @@ class PTYAIShell:
             self.skill_manager,
             self.user_interaction,
             self._original_termios,
+            console=self.console,
         )
         self._ai_handler.shell = self
         self._placeholder_manager = PlaceholderManager.from_environment(
@@ -1072,8 +1073,8 @@ class PTYAIShell:
         )
         self._backend_control_buffer = remainder
 
-        for error in errors:
-            self._record_backend_protocol_error(error)
+        for proto_err in errors:
+            self._record_backend_protocol_error(proto_err)
 
         for event in events:
             self._track_backend_event(event)
