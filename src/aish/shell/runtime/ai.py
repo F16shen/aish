@@ -99,11 +99,10 @@ class AIHandler:
 
         Uses polling-based cancellation to allow Ctrl+C interruption.
         """
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
-        result_box = [None]
-        exc_box = [None]
+        result_box: list[Optional[str]] = [None]
+        exc_box: list[BaseException | None] = [None]
 
         def run_in_thread():
             loop = asyncio.new_event_loop()
@@ -124,12 +123,16 @@ class AIHandler:
             while not future.done():
                 try:
                     future.result(timeout=0.2)
-                except TimeoutError:
+                except FutureTimeoutError:
                     # Check if cancellation was requested
                     if cancellation_token and cancellation_token.is_cancelled():
                         raise KeyboardInterrupt("AI operation cancelled by user")
         finally:
             pool.shutdown(wait=False)
+
+        if cancellation_token and cancellation_token.is_cancelled():
+            raise KeyboardInterrupt("AI operation cancelled by user")
+
         # Future is done, get result or raise exception
         if exc_box[0] is not None:
             raise exc_box[0]
@@ -156,6 +159,18 @@ class AIHandler:
             return text
         prefix = " ".join([f"use {name} skill to do this." for name in refs])
         return f"{prefix}\n\n{text}"
+
+    @staticmethod
+    def _get_cancel_exceptions() -> tuple[type[BaseException], ...]:
+        """Return cancellation exception types available in the current context."""
+        try:
+            return (
+                anyio.get_cancelled_exc_class(),
+                asyncio.CancelledError,
+                KeyboardInterrupt,
+            )
+        except Exception:
+            return (asyncio.CancelledError, KeyboardInterrupt)
 
     def _execute_ai_operation(self, coro, shell, history_entry=None):
         """Execute an AI operation with state management and interrupt handling.
@@ -190,28 +205,27 @@ class AIHandler:
         import signal as _signal
 
         def _sigint_handler(signum, frame):
+            _ = (signum, frame)
             shell._on_interrupt_requested()
-            raise KeyboardInterrupt()
 
         _prev_sigint = _signal.getsignal(_signal.SIGINT)
         _signal.signal(_signal.SIGINT, _sigint_handler)
         response = None
+        was_cancelled = False
+        cancel_exceptions = self._get_cancel_exceptions()
         try:
             response = self._run_async_in_thread(
                 coro, cancellation_token=self.llm_session.cancellation_token
             )
-        except (
-            anyio.get_cancelled_exc_class(),
-            asyncio.CancelledError,
-            KeyboardInterrupt,
-        ):
+        except cancel_exceptions:
+            was_cancelled = True
             shell.handle_processing_cancelled()
         finally:
             _signal.signal(_signal.SIGINT, _prev_sigint)
             shell.interruption_manager.set_state(ShellState.NORMAL)
             shell.operation_in_progress = False
 
-        return response
+        return response, was_cancelled
 
     def _trigger_prompt_and_wait(self) -> None:
         """Trigger prompt redraw and wait for PTY output."""
@@ -282,7 +296,7 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     return response
 
             shell = self._require_shell()
-            response = self._execute_ai_operation(
+            response, was_cancelled = self._execute_ai_operation(
                 _fix(),
                 shell,
                 history_entry={
@@ -293,6 +307,9 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     "stderr": None,
                 },
             )
+
+            if was_cancelled:
+                return
 
             executed_cmd = False
             if response:
@@ -335,7 +352,7 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     return response
 
             shell = self._require_shell()
-            response = self._execute_ai_operation(
+            response, was_cancelled = self._execute_ai_operation(
                 _ask(),
                 shell,
                 history_entry={
@@ -346,6 +363,9 @@ Please analyze the error and suggest a fix. Check the shell history context abov
                     "stderr": None,
                 },
             )
+
+            if was_cancelled:
+                return
 
             if response:
                 self._display_ai_response(response)
