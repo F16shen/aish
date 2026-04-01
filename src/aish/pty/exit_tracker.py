@@ -1,6 +1,7 @@
 """Exit code tracking via PROMPT_COMMAND marker."""
 
 import re
+import signal
 from typing import Optional, Tuple
 
 
@@ -18,6 +19,11 @@ class ExitCodeTracker:
 
     # Format: [AISH_EXIT:code] or [AISH_EXIT:code:command]
     MARKER_PATTERN = re.compile(rb"\[AISH_EXIT:(-?\d+)(?::([^\]]+))?\]")
+
+    # Exit codes from signals that are normal user interactions, not real errors.
+    # 128+SIGPIPE (141): pipe closed because pager exited (e.g., user pressed q
+    # to quit less in git log / git diff / man, etc.)
+    _NORMAL_SIGNAL_EXITS = frozenset({128 + signal.SIGPIPE})
 
     def __init__(self):
         self._last_exit_code: int = 0
@@ -106,7 +112,7 @@ class ExitCodeTracker:
             # that a backend command whose marker text differs from
             # _last_command (setting is_new_user_command=True) is still
             # correctly suppressed.
-            if exit_code != 0:
+            if exit_code != 0 and exit_code not in self._NORMAL_SIGNAL_EXITS:
                 if (
                     not self._error_hint_shown
                     and not self._suppress_error
