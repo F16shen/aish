@@ -936,6 +936,27 @@ class PTYAIShell:
         except OSError:
             self._running = False
 
+    @staticmethod
+    def _is_exit_command(command: str | None) -> bool:
+        """Return whether a command should terminate the current shell."""
+        if not command:
+            return False
+        stripped = command.strip()
+        return stripped in ("exit", "logout") or stripped.startswith(
+            ("exit ", "logout ")
+        )
+
+    def _should_exit_on_pty_close(self) -> bool:
+        """Detect whether PTY closure came from an explicit user exit."""
+        if self._user_requested_exit:
+            return True
+
+        tracker = getattr(self._pty_manager, "exit_tracker", None)
+        if self._is_exit_command(getattr(tracker, "last_command", None)):
+            return True
+
+        return self._is_exit_command(self._pending_command_text)
+
     def _handle_pty_output(self) -> None:
         try:
             data = os.read(self._pty_manager._master_fd, 1024 * 20)
@@ -947,7 +968,7 @@ class PTYAIShell:
                     sys.stdout.buffer.flush()
             else:
                 # PTY slave closed (bash exited)
-                if self._user_requested_exit:
+                if self._should_exit_on_pty_close():
                     # User typed exit/logout — honor it
                     self._running = False
                 elif self._restart_pty():
@@ -956,7 +977,7 @@ class PTYAIShell:
                     self._running = False
         except OSError:
             # PTY error - try to restart
-            if self._user_requested_exit:
+            if self._should_exit_on_pty_close():
                 self._running = False
             elif self._restart_pty():
                 return

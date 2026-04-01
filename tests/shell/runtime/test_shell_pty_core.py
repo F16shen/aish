@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from aish.i18n import t
 from aish.pty.control_protocol import BackendControlEvent
 from aish.pty.manager import PTYManager
+from aish.shell.runtime.ai import AIHandler
 from aish.shell.runtime.app import PTYAIShell
 from aish.shell.runtime.output import OutputProcessor
 from aish.shell.runtime.router import InputRouter
@@ -45,6 +46,36 @@ class _FakePTYManager:
         return len(data)
 
 
+def _make_ai_handler() -> tuple[AIHandler, Mock]:
+    pty_manager = _FakePTYManager()
+    llm_session = Mock()
+    llm_session.cancellation_token = Mock()
+    prompt_manager = Mock()
+    prompt_manager.substitute_template.return_value = "system"
+    skill_manager = Mock()
+    skill_manager.list_skills.return_value = []
+    user_interaction = Mock()
+
+    handler = AIHandler(
+        pty_manager=pty_manager,
+        llm_session=llm_session,
+        prompt_manager=prompt_manager,
+        context_manager=Mock(),
+        skill_manager=skill_manager,
+        user_interaction=user_interaction,
+    )
+
+    shell = Mock()
+    shell._input_router = None
+    shell.interruption_manager = Mock()
+    shell.history_manager = Mock()
+    shell.handle_processing_cancelled = Mock()
+    shell._on_interrupt_requested = Mock()
+    shell.operation_in_progress = False
+    handler.shell = shell
+    return handler, shell
+
+
 def test_input_router_routes_semicolon_question_to_ai_handler(capsys):
     pty_manager = _FakePTYManager()
     ai_handler = Mock()
@@ -56,6 +87,37 @@ def test_input_router_routes_semicolon_question_to_ai_handler(capsys):
     ai_handler.handle_error_correction.assert_not_called()
     assert pty_manager.sent == []
     assert ";hello" in capsys.readouterr().out
+
+
+def test_ai_handler_skips_prompt_redraw_when_question_is_cancelled():
+    handler, _shell = _make_ai_handler()
+
+    def _cancel_operation(coro, shell, history_entry=None):
+        _ = (shell, history_entry)
+        coro.close()
+        return (None, True)
+
+    handler._execute_ai_operation = Mock(side_effect=_cancel_operation)
+    handler._display_ai_response = Mock()
+    handler._trigger_prompt_and_wait = Mock()
+
+    handler.handle_question("hello")
+
+    handler._display_ai_response.assert_not_called()
+    handler._trigger_prompt_and_wait.assert_not_called()
+
+
+def test_ai_handler_marks_cancelled_operation_and_notifies_shell():
+    handler, shell = _make_ai_handler()
+    handler._run_async_in_thread = Mock(
+        side_effect=KeyboardInterrupt("AI operation cancelled by user")
+    )
+
+    response, was_cancelled = handler._execute_ai_operation(object(), shell)
+
+    assert response is None
+    assert was_cancelled is True
+    shell.handle_processing_cancelled.assert_called_once_with()
 
 
 def test_input_router_routes_bare_semicolon_to_error_correction(capsys):
@@ -290,6 +352,26 @@ def test_shell_tracks_command_seq_and_returns_to_editing_on_prompt_ready():
     assert shell._pending_command_seq is None
     assert shell._pending_command_text is None
     assert shell._output_processor.handle_backend_event.call_count == 2
+
+
+def test_shell_does_not_restart_after_explicit_exit_when_flag_was_not_set(monkeypatch):
+    tracker = _FakeTracker()
+    tracker.last_command = "exit"
+
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = _FakePTYManager(tracker=tracker)
+    shell._output_processor = Mock()
+    shell._pending_command_text = None
+    shell._user_requested_exit = False
+    shell._running = True
+    shell._restart_pty = Mock(return_value=True)
+
+    monkeypatch.setattr("aish.shell.runtime.app.os.read", lambda fd, size: b"")
+
+    PTYAIShell._handle_pty_output(shell)
+
+    assert shell._running is False
+    shell._restart_pty.assert_not_called()
 
 
 def test_backend_error_suppressed_prevents_repeated_hints(capsys):
