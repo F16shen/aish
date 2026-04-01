@@ -358,6 +358,8 @@ class CommandState:
             return None
         if isinstance(value, int):
             return value
+        if not isinstance(value, (str, bytes, bytearray)):
+            return None
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -367,6 +369,8 @@ class CommandState:
     def _coerce_exit_code(value: object) -> int:
         if isinstance(value, int):
             return value
+        if not isinstance(value, (str, bytes, bytearray)):
+            return 0
         try:
             return int(value)
         except (TypeError, ValueError):
