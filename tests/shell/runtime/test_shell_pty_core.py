@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 from unittest.mock import Mock
+from unittest.mock import call
 
 from aish.i18n import t
 from aish.pty.command_state import CommandResult, CommandState
@@ -62,6 +63,10 @@ class _FakePTYManager:
         self.last_exit_code = self._command_state.last_exit_code
         return result
 
+    @property
+    def can_correct_last_error(self) -> bool:
+        return self._command_state.can_correct_last_error
+
 
 def _make_ai_handler() -> tuple[AIHandler, Mock]:
     pty_manager = _FakePTYManager()
@@ -89,6 +94,7 @@ def _make_ai_handler() -> tuple[AIHandler, Mock]:
     shell.handle_processing_cancelled = Mock()
     shell._on_interrupt_requested = Mock()
     shell.submit_backend_command = Mock()
+    shell.submit_ai_backend_command = Mock(return_value=True)
     shell.operation_in_progress = False
     handler.shell = shell
     return handler, shell
@@ -111,6 +117,16 @@ def test_ai_handler_skips_prompt_redraw_when_question_is_cancelled():
     shell.submit_backend_command.assert_not_called()
 
 
+def test_ai_handler_executes_corrected_command_via_security_submission():
+    handler, shell = _make_ai_handler()
+
+    result = handler._ask_execute_command("rm -rf /tmp/demo")
+
+    assert result is True
+    shell.submit_ai_backend_command.assert_called_once_with("rm -rf /tmp/demo")
+    shell.submit_backend_command.assert_not_called()
+
+
 def test_ai_handler_marks_cancelled_operation_and_notifies_shell():
     handler, shell = _make_ai_handler()
     handler._run_async_in_thread = Mock(
@@ -124,6 +140,31 @@ def test_ai_handler_marks_cancelled_operation_and_notifies_shell():
     shell.handle_processing_cancelled.assert_called_once_with()
 
 
+def test_ai_handler_refuses_error_correction_for_interactive_session_exit(capsys):
+    handler, _ = _make_ai_handler()
+    handler.pty_manager.register_user_command("ssh root@example.com")
+    handler.pty_manager.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="command_started",
+            ts=1,
+            payload={"command": "ssh root@example.com"},
+        )
+    )
+    handler.pty_manager.handle_backend_event(
+        BackendControlEvent(
+            version=1,
+            type="prompt_ready",
+            ts=2,
+            payload={"exit_code": 255},
+        )
+    )
+
+    handler.handle_error_correction()
+
+    assert "No previous error to fix." in capsys.readouterr().out
+
+
 def test_output_processor_filters_exit_echo():
     processor = OutputProcessor(_FakePTYManager())
     processor.set_filter_exit_echo(True)
@@ -135,7 +176,9 @@ def test_output_processor_filters_prefixed_user_command_echo():
     processor = OutputProcessor(_FakePTYManager())
     processor.prepare_user_command_echo("pwd", 5)
 
-    rendered = processor.process(b"__AISH_ACTIVE_COMMAND_SEQ=5; pwd\r\n")
+    rendered = processor.process(
+        b" __AISH_ACTIVE_COMMAND_SEQ=5; __AISH_ACTIVE_COMMAND_TEXT=pwd; pwd\r\n"
+    )
 
     assert rendered == b""
 
@@ -144,7 +187,9 @@ def test_output_processor_filters_prefixed_user_command_echo_before_command_outp
     processor = OutputProcessor(_FakePTYManager())
     processor.prepare_user_command_echo("pwd", 5)
 
-    rendered = processor.process(b"__AISH_ACTIVE_COMMAND_SEQ=5; pwd\r\n/tmp/project\r\n")
+    rendered = processor.process(
+        b" __AISH_ACTIVE_COMMAND_SEQ=5; __AISH_ACTIVE_COMMAND_TEXT=pwd; pwd\r\n/tmp/project\r\n"
+    )
 
     assert rendered == b"/tmp/project\r\n"
 
@@ -257,7 +302,9 @@ def test_pty_manager_send_command_injects_command_seq():
         ),
     )
 
-    assert sent == [b"__AISH_ACTIVE_COMMAND_SEQ=7; echo hi\n"]
+    assert sent == [
+        b" __AISH_ACTIVE_COMMAND_SEQ=7; __AISH_ACTIVE_COMMAND_TEXT='echo hi'; echo hi\n"
+    ]
     assert result is not None
     assert manager.last_command == "echo hi"
 
@@ -385,6 +432,92 @@ def test_shell_handle_prompt_submission_blank_line_clears_error_state():
     shell.submit_backend_command.assert_not_called()
 
 
+def test_shell_prompt_for_command_merges_backslash_continuation_for_command():
+    shell = object.__new__(PTYAIShell)
+    shell._prompt_controller = Mock()
+    shell._prompt_controller.prompt.side_effect = ["echo hello \\", "world"]
+    shell._restore_terminal = Mock()
+    shell._editing_buffer_text = ""
+    shell._shell_phase = "editing"
+    shell.console = Mock()
+    shell._running = True
+    shell._at_line_start = False
+
+    result = PTYAIShell._prompt_for_command(shell)
+
+    assert result == "echo hello world"
+    assert shell._prompt_controller.prompt.call_args_list == [call(), call("... ")]
+    assert shell._at_line_start is True
+
+
+def test_shell_prompt_for_command_merges_backslash_continuation_for_ai_prompt():
+    shell = object.__new__(PTYAIShell)
+    shell._prompt_controller = Mock()
+    shell._prompt_controller.prompt.side_effect = [";你好 \\", "继续说"]
+    shell._restore_terminal = Mock()
+    shell._editing_buffer_text = ""
+    shell._shell_phase = "editing"
+    shell.console = Mock()
+    shell._running = True
+    shell._at_line_start = False
+
+    result = PTYAIShell._prompt_for_command(shell)
+
+    assert result == ";你好\n继续说"
+    assert shell._prompt_controller.prompt.call_args_list == [call(), call("... ")]
+
+
+def test_shell_handle_prompt_submission_routes_model_command_to_special_handler():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._ai_handler = Mock()
+    shell._prompt_controller = Mock()
+    shell.submit_backend_command = Mock()
+    shell.handle_model_command = Mock()
+    shell.handle_setup_command = Mock()
+
+    PTYAIShell._handle_prompt_submission(shell, "/model foo/bar")
+
+    shell._prompt_controller.remember_command.assert_called_once_with("/model foo/bar")
+    shell.handle_model_command.assert_called_once_with("/model foo/bar")
+    shell.handle_setup_command.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
+
+
+def test_shell_handle_prompt_submission_routes_setup_command_to_special_handler():
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._ai_handler = Mock()
+    shell._prompt_controller = Mock()
+    shell.submit_backend_command = Mock()
+    shell.handle_model_command = Mock()
+    shell.handle_setup_command = Mock()
+
+    PTYAIShell._handle_prompt_submission(shell, "/setup")
+
+    shell._prompt_controller.remember_command.assert_called_once_with("/setup")
+    shell.handle_setup_command.assert_called_once_with("/setup")
+    shell.handle_model_command.assert_not_called()
+    shell.submit_backend_command.assert_not_called()
+
+
+def test_shell_handle_model_command_reports_current_model():
+    shell = object.__new__(PTYAIShell)
+    shell.console = Mock()
+    shell.config = Mock(model="demo/model")
+    shell._record_special_command_result = Mock()
+
+    PTYAIShell.handle_model_command(shell, "/model")
+
+    shell.console.print.assert_called_once_with(t("shell.model.current", model="demo/model"))
+    shell._record_special_command_result.assert_called_once_with(
+        "/model",
+        exit_code=0,
+        stdout=t("shell.model.current", model="demo/model"),
+        stderr="",
+    )
+
+
 def test_shell_submit_backend_command_registers_user_seq():
     shell = object.__new__(PTYAIShell)
     shell._pty_manager = Mock()
@@ -405,6 +538,124 @@ def test_shell_submit_backend_command_registers_user_seq():
     shell._pty_manager.send_command.assert_called_once_with(
         "pwd", command_seq=3, source="user"
     )
+
+
+def test_shell_submit_ai_backend_command_skips_confirmation_for_approved_command(monkeypatch):
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._approved_ai_commands = {"echo ok"}
+    shell.submit_backend_command = Mock(return_value=9)
+    shell.console = Mock()
+    shell.interruption_manager = Mock()
+    shell.security_manager = Mock()
+    shell._current_cwd = "/tmp"
+
+    result = PTYAIShell.submit_ai_backend_command(shell, "echo ok")
+
+    assert result is True
+    shell.submit_backend_command.assert_called_once_with("echo ok")
+    shell.security_manager.decide.assert_not_called()
+
+
+def test_shell_submit_ai_backend_command_blocks_high_risk_command(monkeypatch):
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._approved_ai_commands = set()
+    shell.submit_backend_command = Mock()
+    shell.console = Mock()
+    shell.interruption_manager = Mock()
+    shell._current_cwd = "/tmp"
+    shell.security_manager = Mock(
+        decide=Mock(return_value=Mock(allow=False, require_confirmation=False, analysis={"risk_level": "HIGH"}))
+    )
+
+    captured: list[tuple[dict[str, object], str]] = []
+    monkeypatch.setattr(
+        "aish.shell.runtime.app.display_security_panel",
+        lambda shell_obj, data, panel_mode="confirm": captured.append((data, panel_mode)),
+    )
+
+    result = PTYAIShell.submit_ai_backend_command(shell, "rm -rf /tmp/demo")
+
+    assert result is False
+    shell.submit_backend_command.assert_not_called()
+    assert captured
+    assert captured[0][1] == "blocked"
+    assert captured[0][0]["command"] == "rm -rf /tmp/demo"
+
+
+def test_shell_submit_ai_backend_command_confirms_then_executes(monkeypatch):
+    from aish.llm import LLMCallbackResult
+
+    shell = object.__new__(PTYAIShell)
+    shell._pty_manager = Mock()
+    shell._approved_ai_commands = set()
+    shell.submit_backend_command = Mock(return_value=5)
+    shell.console = Mock()
+    shell.interruption_manager = Mock()
+    shell._current_cwd = "/tmp"
+    shell.security_manager = Mock(
+        decide=Mock(return_value=Mock(allow=True, require_confirmation=True, analysis={"risk_level": "MEDIUM"}))
+    )
+
+    captured: list[tuple[dict[str, object], str]] = []
+    monkeypatch.setattr(
+        "aish.shell.runtime.app.display_security_panel",
+        lambda shell_obj, data, panel_mode="confirm": captured.append((data, panel_mode)),
+    )
+    monkeypatch.setattr(
+        "aish.shell.runtime.app.get_user_confirmation",
+        lambda shell_obj, remember_command=None, allow_remember=False: LLMCallbackResult.APPROVE,
+    )
+
+    result = PTYAIShell.submit_ai_backend_command(shell, "rm -rf /tmp/demo")
+
+    assert result is True
+    shell.submit_backend_command.assert_called_once_with("rm -rf /tmp/demo")
+    assert captured
+    assert captured[0][1] == "confirm"
+
+
+def test_create_llm_session_wires_is_command_approved(monkeypatch):
+    import aish.llm as llm_module
+
+    captured: dict[str, object] = {}
+
+    class _FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._sync_init_lock = Mock()
+            self._initialized = False
+
+        def _get_litellm(self):
+            return None
+
+        def _get_acompletion(self):
+            return None
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(llm_module, "LLMSession", _FakeSession)
+    monkeypatch.setattr("aish.shell.runtime.app.threading.Thread", _FakeThread)
+
+    shell = object.__new__(PTYAIShell)
+    shell.config = Mock()
+    shell.skill_manager = Mock()
+    shell.handle_llm_event = Mock()
+    shell.history_manager = Mock()
+    shell._approved_ai_commands = set()
+    shell._is_command_approved = PTYAIShell._is_command_approved.__get__(shell, PTYAIShell)
+    shell._on_interrupt_requested = Mock()
+
+    session = PTYAIShell._create_llm_session(shell)
+
+    assert session is not None
+    assert captured["is_command_approved"] is shell._is_command_approved
 
 
 def test_shell_does_not_restart_after_explicit_exit_when_flag_was_not_set(monkeypatch):

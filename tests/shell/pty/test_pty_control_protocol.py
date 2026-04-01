@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import select
 import time
+from pathlib import Path
 
 from aish.pty.manager import PTYManager
 from aish.pty.control_protocol import decode_control_chunk
@@ -85,5 +86,50 @@ def test_pty_manager_execute_command_returns_output_without_marker():
         assert exit_code == 0
         assert output == "hello"
         assert "[AISH_EXIT:" not in output
+    finally:
+        manager.stop()
+
+
+def test_bash_history_hides_internal_command_seq_prefix_for_user_commands(tmp_path: Path):
+    histfile = tmp_path / "bash_history"
+    manager = PTYManager(use_output_thread=False, env={"HISTFILE": str(histfile)})
+
+    try:
+        manager.start()
+        manager.send_command("echo hello", command_seq=7, source="user")
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([manager.control_fd, manager._master_fd], [], [], 0.1)
+            saw_prompt = False
+            for fd in ready:
+                data = os.read(fd, 4096)
+                if not data:
+                    continue
+                if fd == manager.control_fd:
+                    events, errors = manager.decode_control_events(data)
+                    assert errors == []
+                    for event in events:
+                        manager.handle_backend_event(event)
+                        if event.type == "prompt_ready":
+                            saw_prompt = True
+            if saw_prompt:
+                break
+
+        while True:
+            ready, _, _ = select.select([manager._master_fd], [], [], 0)
+            if not ready:
+                break
+            os.read(manager._master_fd, 4096)
+
+        output, exit_code = manager.execute_command("history | tail -n 5")
+        history_lines = [
+            line for line in output.splitlines() if line.lstrip()[:1].isdigit()
+        ]
+
+        assert exit_code == 0
+        assert history_lines == ["    1  echo hello"]
+        assert all("__AISH_ACTIVE_COMMAND_SEQ" not in line for line in history_lines)
+        assert all("history | tail -n 5" not in line for line in history_lines)
     finally:
         manager.stop()

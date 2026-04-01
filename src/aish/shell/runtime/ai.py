@@ -245,6 +245,10 @@ class AIHandler:
 
     def handle_error_correction(self) -> None:
         """Handle error correction."""
+        if not getattr(self.pty_manager, "can_correct_last_error", False):
+            print("\r\033[KNo previous error to fix.")
+            return
+
         if self.pty_manager.last_exit_code in (0, 130):
             print("\r\033[KNo previous error to fix.")
             return
@@ -421,6 +425,5 @@ Please analyze the error and suggest a fix. Check the shell history context abov
         )
         if confirmed:
             shell = self._require_shell()
-            shell.submit_backend_command(command)
-            return True
+            return bool(shell.submit_ai_backend_command(command))
         return False

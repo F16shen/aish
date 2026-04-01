@@ -3,8 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import to_formatted_text
+from prompt_toolkit.shortcuts import CompleteStyle
 
+from aish.shell.ui.completion import ShellCompleter
 from aish.shell.ui.editor import HistoryAutoSuggest, ShellPromptController
 
 
@@ -63,6 +67,19 @@ def test_shell_prompt_controller_does_not_attach_bottom_toolbar_to_session():
     controller = ShellPromptController()
 
     assert getattr(controller._session, "bottom_toolbar", None) is None
+    assert controller._session.completer is controller._completer
+    assert controller._session.complete_style == CompleteStyle.READLINE_LIKE
+
+
+def test_shell_prompt_controller_forwards_custom_prompt_message():
+    controller = ShellPromptController()
+    controller._session.prompt = Mock(return_value="echo hi")
+
+    result = controller.prompt("... ")
+
+    assert result == "echo hi"
+    controller._session.prompt.assert_called_once()
+    assert controller._session.prompt.call_args.args[0] == "... "
 
 
 def test_shell_prompt_controller_renders_interruption_hint_without_ai_default():
@@ -76,3 +93,69 @@ def test_shell_prompt_controller_renders_interruption_hint_without_ai_default():
     assert "Press Ctrl+C to cancel" == "".join(
         fragment[1] for fragment in to_formatted_text(toolbar)
     )
+
+
+def test_shell_completer_suggests_builtin_and_special_commands():
+    completer = ShellCompleter(command_provider=lambda: ["ls", "logout", "pwd"])
+
+    completions = list(
+        completer.get_completions(Document(text="/m", cursor_position=2), CompleteEvent(completion_requested=True))
+    )
+    assert [item.text for item in completions] == ["/model"]
+
+    completions = list(
+        completer.get_completions(Document(text="pw", cursor_position=2), CompleteEvent(completion_requested=True))
+    )
+    assert [item.text for item in completions] == ["pwd"]
+
+
+def test_shell_completer_completes_directories_for_cd(tmp_path):
+    target_dir = tmp_path / "project"
+    target_dir.mkdir()
+    (tmp_path / "plain.txt").write_text("data", encoding="utf-8")
+
+    completer = ShellCompleter(
+        cwd_provider=lambda: str(tmp_path),
+        command_provider=lambda: ["cd"],
+    )
+
+    completions = list(
+        completer.get_completions(
+            Document(text="cd pr", cursor_position=5),
+            CompleteEvent(completion_requested=True),
+        )
+    )
+
+    assert [item.display_text for item in completions] == ["project/"]
+
+
+def test_shell_completer_completes_path_like_first_token(tmp_path):
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+
+    completer = ShellCompleter(
+        cwd_provider=lambda: str(tmp_path),
+        command_provider=lambda: ["ls", "pwd"],
+    )
+
+    completions = list(
+        completer.get_completions(
+            Document(text="./scr", cursor_position=5),
+            CompleteEvent(completion_requested=True),
+        )
+    )
+
+    assert [item.display_text for item in completions] == ["scripts/"]
+
+
+def test_shell_completer_skips_ai_prefixed_input():
+    completer = ShellCompleter(command_provider=lambda: ["pwd"])
+
+    completions = list(
+        completer.get_completions(
+            Document(text=";pw", cursor_position=3),
+            CompleteEvent(completion_requested=True),
+        )
+    )
+
+    assert completions == []

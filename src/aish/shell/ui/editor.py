@@ -14,6 +14,10 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.key_binding.bindings.auto_suggest import (
     load_auto_suggest_bindings,
 )
+from prompt_toolkit.shortcuts import CompleteStyle
+
+from .completion import ShellCompleter
+
 if TYPE_CHECKING:
     from prompt_toolkit.buffer import Buffer
 
@@ -53,6 +57,7 @@ class ShellPromptController:
         interruption_manager: Optional["InterruptionManager"] = None,
         on_buffer_change: Optional[Callable[[str], None]] = None,
         cwd_provider: Optional[Callable[[], str]] = None,
+        completer: Optional[ShellCompleter] = None,
     ):
         self._history_manager = history_manager
         self._interruption_manager = interruption_manager
@@ -60,18 +65,23 @@ class ShellPromptController:
         self._cwd_provider = cwd_provider
         self._history = InMemoryHistory()
         self._load_history()
+        self._completer = completer or ShellCompleter(cwd_provider=cwd_provider)
         self._session = PromptSession(
             history=self._history,
             auto_suggest=HistoryAutoSuggest(history_manager),
+            completer=self._completer,
+            complete_while_typing=False,
+            complete_style=CompleteStyle.READLINE_LIKE,
             key_bindings=self._build_key_bindings(),
             mouse_support=False,
+            reserve_space_for_menu=0,
         )
         if hasattr(self._session, "app") and hasattr(self._session.app, "output"):
             output = self._session.app.output
             if hasattr(output, "enable_cpr"):
                 setattr(output, "enable_cpr", False)
 
-    def prompt(self) -> str:
+    def prompt(self, prompt_message=None) -> str:
         """Read one editing-mode line from the terminal."""
 
         def _pre_run() -> None:
@@ -85,7 +95,7 @@ class ShellPromptController:
             buffer.on_text_changed += _handle_change
 
         return self._session.prompt(
-            self._build_prompt_message(),
+            self._build_prompt_message() if prompt_message is None else prompt_message,
             pre_run=_pre_run,
         )
 
