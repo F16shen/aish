@@ -7,6 +7,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-03
+
+### Added
+
+- Added `aish models usage` so the CLI can show the current model, resolved provider, credential source or auth state, and provider dashboard entry.
+- Added `prompt_theme` configuration for reusable shell prompt styles on top of the existing prompt scripting support.
+- Added opt-in live smoke coverage for real provider credentials and installed bundle verification before release.
+
+### Changed
+
+- Changed the shell architecture from the old `shell.py` plus `shell_enhanced` and `tui` helpers into dedicated `shell/runtime`, `shell/ui`, `shell/pty`, shared `pty`, and `interaction` modules.
+- Changed the interactive shell flow to use explicit backend control events and editing phases, improving multiline input, completions, confirmation panels, ask_user dialogs, and recovery after long-running terminal sessions.
+- Changed model auth entry so `aish models auth` is the primary command path, while the old `login` path remains as a compatibility alias.
+
+### Removed
+
+- Removed the unfinished plan, research, think, and old TUI-oriented code paths from the active shell implementation.
+
+### Fixed
+
+- Fixed Ctrl+C handling for AI operations and interactive PTY sessions so control returns to the shell more predictably after interruptions.
+- Fixed false error hints for normal SIGPIPE-based pager exits such as quitting `less`.
+- Fixed packaged bundle startup by including the bash wrapper assets required by the PTY shell.
+
+### Security
+
+- Fixed a history command injection vulnerability in the shell execution path.
+
 ## [0.1.3] - 2026-03-19
 
 ### Added

@@ -120,12 +120,23 @@ jobs:
           path: artifacts/${{ matrix.arch }}/*
           if-no-files-found: error
 
+  live-smoke-validation:
+    name: Live smoke validation
+    needs:
+      - release-meta
+      - dry-run-package-validation
+    uses: ./.github/workflows/live-smoke.yml
+    with:
+      ref: ${{ github.sha }}
+    secrets: inherit
+
   release-preparation-summary:
     name: Summarize release preparation validation
     needs:
       - release-meta
       - prepare-release
       - dry-run-package-validation
+      - live-smoke-validation
     runs-on: ubuntu-latest
     steps:
       - name: Write final summary
@@ -137,5 +148,5 @@ jobs:
           - Tag: ${{ needs.release-meta.outputs.tag }}
           - Previous stable tag: ${{ needs.release-meta.outputs.previous_stable_tag || 'none' }}
 
-          Release metadata artifacts and dry-run bundle artifacts have been uploaded for review.
+          Release metadata artifacts, dry-run bundle artifacts, and live smoke validation have completed successfully.
           EOF
