@@ -23,8 +23,7 @@ jobs:
   live-smoke:
     name: Run live smoke tests
     runs-on: ubuntu-latest
-    environment:
-      name: live-smoke
+    environment: live-smoke
 
     steps:
       - name: Checkout repository
@@ -69,6 +68,7 @@ jobs:
           AISH_LIVE_SMOKE_MODEL: ${{ secrets.AISH_LIVE_SMOKE_MODEL }}
         run: |
           set -euo pipefail
+          mkdir -p build
           uv run --group dev python -m pytest tests/live_smoke -v -m live_smoke --run-live-smoke --basetemp build/pytest-live-smoke
 
       - name: Upload live smoke diagnostics
