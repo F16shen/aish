@@ -11,20 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added a PTY-native interactive shell foundation so AISH can drive full-screen and long-running terminal programs more reliably.
-- Added a pluggable prompt theme system, making shell prompt styling easier to customize without patching core logic.
-- Added provider auth visibility improvements, including clearer model usage status output and configurable OpenAI Codex auth path support.
+- Added `aish models usage` so the CLI can show the current model, resolved provider, credential source or auth state, and provider dashboard entry.
+- Added `prompt_theme` configuration for reusable shell prompt styles on top of the existing prompt scripting support.
+- Added opt-in live smoke coverage for real provider credentials and installed bundle verification before release.
 
 ### Changed
 
-- Changed the shell frontend to a prompt-toolkit based PTY flow with smoother interrupt handling, interaction prompts, and suggestion behavior.
-- Changed release validation coverage to include broader live smoke checks for real-world shell and installation paths.
+- Changed the shell architecture from the old `shell.py` plus `shell_enhanced` and `tui` helpers into dedicated `shell/runtime`, `shell/ui`, `shell/pty`, shared `pty`, and `interaction` modules.
+- Changed the interactive shell flow to use explicit backend control events and editing phases, improving multiline input, completions, confirmation panels, ask_user dialogs, and recovery after long-running terminal sessions.
+- Changed model auth entry so `aish models auth` is the primary command path, while the old `login` path remains as a compatibility alias.
+
+### Removed
+
+- Removed the unfinished plan, research, think, and old TUI-oriented code paths from the active shell implementation.
 
 ### Fixed
 
-- Fixed false shell error hints for benign exits such as SIGPIPE-driven pager quits, reducing noisy failure reporting during normal terminal use.
-- Fixed AI cancellation, exit tracking, and Ctrl+C handling so interrupted operations return control to the shell more predictably.
-- Fixed frozen binary packaging to include the bash wrapper assets required for bundled shell startup.
+- Fixed Ctrl+C handling for AI operations and interactive PTY sessions so control returns to the shell more predictably after interruptions.
+- Fixed false error hints for normal SIGPIPE-based pager exits such as quitting `less`.
+- Fixed packaged bundle startup by including the bash wrapper assets required by the PTY shell.
 
 ### Security
 
